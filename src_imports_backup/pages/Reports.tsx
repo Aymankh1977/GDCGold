@@ -1,0 +1,153 @@
+import React from 'react';
+import { 
+  FileText, 
+  Download, 
+  Eye, 
+  Trash2,
+  Plus,
+  Calendar
+} from 'lucide-react';
+import { Card, CardHeader } from '@/components/common/Card';
+import { Button } from '@/components/common/Button';
+import { useAnalysisStore } from '@/store/analysisStore';
+import { formatDate } from '@/utils/helpers';
+
+const Reports: React.FC = () => {
+  const { reports, removeReport, analyses } = useAnalysisStore();
+
+  const generateNewReport = () => {
+    // Navigate to analysis page or open report generation modal
+    console.log('Generate new report');
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Page Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Evaluation Reports</h1>
+          <p className="text-gray-500 mt-1">
+            Generate and download comprehensive GDC evaluation reports
+          </p>
+        </div>
+        <Button
+          onClick={generateNewReport}
+          icon={<Plus className="w-4 h-4" />}
+        >
+          Generate Report
+        </Button>
+      </div>
+
+      {/* Reports List */}
+      <Card>
+        <CardHeader
+          title="Generated Reports"
+          subtitle={`${reports.length} reports`}
+        />
+
+        {reports.length === 0 ? (
+          <div className="text-center py-12">
+            <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+            <p className="text-gray-500 mb-4">No reports generated yet</p>
+            <p className="text-sm text-gray-400 mb-4">
+              Run an analysis on your documents to generate evaluation reports
+            </p>
+            <Button variant="secondary" onClick={generateNewReport}>
+              Generate Your First Report
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {reports.map((report) => (
+              <div
+                key={report.id}
+                className="flex items-center justify-between p-4 border border-gray-200 rounded-lg
+                          hover:border-gray-300 transition-colors"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="p-3 bg-primary-100 rounded-lg">
+                    <FileText className="w-6 h-6 text-primary-600" />
+                  </div>
+                  <div>
+                    <h4 className="font-medium text-gray-900">{report.title}</h4>
+                    <div className="flex items-center gap-3 mt-1 text-sm text-gray-500">
+                      <span className="flex items-center gap-1">
+                        <Calendar className="w-4 h-4" />
+                        {formatDate(report.generatedAt)}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium
+                        ${report.overallCompliance === 'met' 
+                          ? 'bg-green-100 text-green-700'
+                          : report.overallCompliance === 'partially-met'
+                          ? 'bg-yellow-100 text-yellow-700'
+                          : 'bg-red-100 text-red-700'}`}>
+                        {report.overallCompliance.replace('-', ' ').toUpperCase()}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    icon={<Eye className="w-4 h-4" />}
+                  >
+                    View
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={<Download className="w-4 h-4" />}
+                  >
+                    Download PDF
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeReport(report.id)}
+                    icon={<Trash2 className="w-4 h-4 text-red-500" />}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Quick Stats */}
+      {analyses.length > 0 && (
+        <Card>
+          <CardHeader title="Analysis History" />
+          <div className="space-y-3">
+            {analyses.slice(0, 5).map((analysis) => (
+              <div
+                key={analysis.id}
+                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+              >
+                <div>
+                  <p className="font-medium text-gray-900">
+                    Analysis from {formatDate(analysis.timestamp)}
+                  </p>
+                  <p className="text-sm text-gray-500">
+                    {analysis.requirementResults.filter(r => r.status === 'met').length}/21 requirements met
+                  </p>
+                </div>
+                <span className={`px-2 py-1 text-xs font-medium rounded-full
+                  ${analysis.overallStatus === 'met' 
+                    ? 'bg-green-100 text-green-700'
+                    : analysis.overallStatus === 'partially-met'
+                    ? 'bg-yellow-100 text-yellow-700'
+                    : 'bg-red-100 text-red-700'}`}>
+                  {analysis.overallStatus.replace('-', ' ')}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+};
+
+export default Reports;

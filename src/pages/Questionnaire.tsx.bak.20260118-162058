@@ -1,0 +1,213 @@
+import React, { useEffect, useState } from 'react';
+import {
+  FileText,
+  CheckCircle,
+  AlertCircle,
+  Info,
+  Sparkles,
+  Download
+} from 'lucide-react';
+
+import { Card, CardHeader } from '@/components/common/Card';
+import { Button } from '@/components/common/Button';
+import { ProgressBar } from '@/components/common/ProgressBar';
+
+import { useDocumentStore } from '@/store/documentStore';
+import { useAnalysisStore } from '@/store/analysisStore';
+
+import { parseDocument } from '@/engines/document/parser';
+import { analyzeQuestionnaire } from '@/engines/questionnaire/questionHandler';
+import { generateQuestionnairePdf } from '@/engines/reports/QuestionnairePdfReport';
+
+import type { Document, QuestionnaireResponse } from '@/types';
+
+const Questionnaire: React.FC = () => {
+  const {
+    documents,
+    selectedDocumentId,
+    getDocumentById,
+    setSelectedDocument
+  } = useDocumentStore();
+
+  const {
+    questionnaireAnalyses,
+    addQuestionnaireAnalysis,
+    getQuestionnaireAnalysisByDocumentId
+  } = useAnalysisStore() as any;
+
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [responses, setResponses] = useState<QuestionnaireResponse[]>([]);
+  const [completeness, setCompleteness] = useState(0);
+
+  const selectedDoc = selectedDocumentId
+    ? getDocumentById(selectedDocumentId)
+    : null;
+
+  const questionnaireDocs = documents.filter(
+    d => d.category === 'pre-inspection-questionnaire'
+  );
+
+  const runAnalysis = async () => {
+    if (!selectedDoc) return;
+
+    setIsAnalyzing(true);
+
+    try {
+      const parsed = parseDocument(selectedDoc.extractedText || '');
+      const analysis = analyzeQuestionnaire(
+        selectedDoc,
+        parsed.questions || [],
+        documents.filter(d => d.id !== selectedDoc.id)
+      );
+
+      setResponses(analysis.responses || []);
+      setCompleteness(analysis.overallCompleteness || 0);
+
+      addQuestionnaireAnalysis(analysis);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedDocumentId) return;
+
+    const existing =
+      getQuestionnaireAnalysisByDocumentId?.(selectedDocumentId) ||
+      questionnaireAnalyses?.find((q: any) => q.documentId === selectedDocumentId);
+
+    if (existing) {
+      setResponses(existing.responses || []);
+      setCompleteness(existing.overallCompleteness || 0);
+    }
+  }, [selectedDocumentId, questionnaireAnalyses]);
+
+  const exportPdf = () => {
+    if (!selectedDoc || responses.length === 0) return;
+
+    generateQuestionnairePdf({
+      documentName: selectedDoc.name,
+      completeness,
+      responses
+    });
+  };
+
+  const statusClass = (s: string) => {
+    switch (s) {
+      case 'complete':
+        return 'bg-emerald-50 text-emerald-700 border-emerald-100';
+      case 'needs-review':
+        return 'bg-amber-50 text-amber-700 border-amber-100';
+      case 'incomplete':
+        return 'bg-rose-50 text-rose-700 border-rose-100';
+      default:
+        return 'bg-slate-50 text-slate-700 border-slate-100';
+    }
+  };
+
+  return (
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="flex justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">Pre-Inspection Questionnaire</h1>
+          <p className="text-gray-500 mt-1">
+            Evidence-informed analysis using uploaded inspection materials
+          </p>
+        </div>
+
+        <div className="flex gap-3">
+          <Button
+            variant="outline"
+            icon={<Download className="w-4 h-4" />}
+            disabled={responses.length === 0}
+            onClick={exportPdf}
+          >
+            Export PDF
+          </Button>
+
+          <Button
+            icon={<Sparkles className="w-4 h-4" />}
+            loading={isAnalyzing}
+            disabled={!selectedDoc || isAnalyzing}
+            onClick={runAnalysis}
+          >
+            Run AI Analysis
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Left */}
+        <Card>
+          <CardHeader title="Select Questionnaire" />
+          <div className="p-6 pt-0 space-y-2">
+            {questionnaireDocs.map(doc => (
+              <div
+                key={doc.id}
+                onClick={() => setSelectedDocument(doc.id)}
+                className={`cursor-pointer p-3 rounded-lg border
+                  ${selectedDocumentId === doc.id
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-gray-100 hover:bg-gray-50'}`}
+              >
+                <FileText className="inline w-4 h-4 mr-2 text-gray-400" />
+                {doc.name}
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        {/* Right */}
+        <div className="lg:col-span-2 space-y-4">
+          {responses.length === 0 ? (
+            <Card className="p-12 text-center">
+              <Info className="w-10 h-10 mx-auto text-gray-300 mb-3" />
+              <p className="text-gray-500">
+                Select a questionnaire and run analysis.
+              </p>
+            </Card>
+          ) : (
+            responses.map((r, i) => (
+              <Card key={r.questionId}>
+                <div className="p-6 space-y-4">
+                  <div className="flex justify-between">
+                    <h3 className="font-semibold">
+                      Q{i + 1}. {r.question}
+                    </h3>
+                    <span className={`px-2 py-1 text-xs border rounded ${statusClass(r.status)}`}>
+                      {r.status.replace('-', ' ')}
+                    </span>
+                  </div>
+
+                  {r.originalAnswer && (
+                    <p className="text-sm text-gray-600">
+                      <strong>Current:</strong> {r.originalAnswer}
+                    </p>
+                  )}
+
+                  {r.suggestedAnswer && (
+                    <div className="bg-primary-50 border border-primary-100 rounded p-3 text-sm">
+                      <strong>Suggested improvement:</strong><br />
+                      {r.suggestedAnswer}
+                    </div>
+                  )}
+
+                  {r.recommendations?.length > 0 && (
+                    <ul className="list-disc pl-5 text-sm text-gray-600">
+                      {r.recommendations.map((rec, idx) => (
+                        <li key={idx}>{rec}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </Card>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Questionnaire;

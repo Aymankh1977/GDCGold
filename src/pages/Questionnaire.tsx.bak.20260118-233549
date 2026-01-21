@@ -1,0 +1,692 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  FileText,
+  CheckCircle,
+  AlertCircle,
+  Info,
+  Sparkles,
+  Download,
+  ShieldCheck,
+  ListChecks,
+} from 'lucide-react';
+import { Card, CardHeader } from '@/components/common/Card';
+import { Button } from '@/components/common/Button';
+import { ProgressBar } from '@/components/common/ProgressBar';
+import { useDocumentStore } from '@/store/documentStore';
+import { useAnalysisStore } from '@/store/analysisStore';
+import { parseDocument } from '@/engines/document/parser';
+import { analyzeQuestionnaire } from '@/engines/questionnaire/questionHandler';
+import type { Document, QuestionnaireResponse } from '@/types';
+import { jsPDF } from 'jspdf';
+
+type RequirementFinding = {
+  id: string;
+  requirementNumber: number;
+  requirementText: string;
+  providerResponsePresent: boolean;
+  providerResponseStrength: 'missing' | 'brief' | 'adequate';
+  evidenceSignals: { source: string; relevanceScore: number }[];
+  gaps: string[];
+  recommendations: string[];
+  evidencePromptPresent: boolean;
+};
+
+function looksLikeQuestionnaire(doc: Document): boolean {
+  const t = (doc.extractedText || '').toLowerCase();
+  if (!t) return false;
+
+  const hasQ = /\bq\s*1\b/.test(t) || /\bq1\b/.test(t) || /\bquestion\s*1\b/.test(t);
+  const hasHeader = t.includes('pre-inspection questionnaire') || t.includes('pre inspection questionnaire');
+  const hasManyQs = (t.match(/\bq\s*\d+\b/g) || []).length >= 5;
+
+  return hasHeader || (hasQ && hasManyQs);
+}
+
+// Qs that are extraction-only (no analysis)
+const FACTUAL_QS = new Set(['Q1','Q2','Q3','Q4','Q7','Q10']);
+
+const Questionnaire: React.FC = () => {
+  const {
+    documents,
+    selectedDocumentId,
+    getDocumentById,
+    setSelectedDocument,
+  } = useDocumentStore() as any;
+
+  const {
+    addQuestionnaireAnalysis,
+    questionnaireAnalyses,
+    getQuestionnaireAnalysisByDocumentId,
+  } = useAnalysisStore() as any;
+
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [responses, setResponses] = useState<QuestionnaireResponse[]>([]);
+  const [requirementFindings, setRequirementFindings] = useState<RequirementFinding[]>([]);
+  const [completeness, setCompleteness] = useState(0);
+  const [view, setView] = useState<'questions' | 'requirements'>('questions');
+
+  const selectedDoc = selectedDocumentId ? getDocumentById(selectedDocumentId) : null;
+
+  const questionnaireCandidates = useMemo(() => {
+    return (documents || []).filter((doc: Document) => {
+      if (!doc) return false;
+      if (doc.category === 'pre-inspection-questionnaire') return true;
+      return looksLikeQuestionnaire(doc);
+    });
+  }, [documents]);
+
+  const isQuestionnaireSelected = !!selectedDoc && (
+    selectedDoc.category === 'pre-inspection-questionnaire' || looksLikeQuestionnaire(selectedDoc)
+  );
+
+  const analyzeSelectedQuestionnaire = async () => {
+    if (!selectedDoc || !isQuestionnaireSelected) return;
+
+    setIsAnalyzing(true);
+
+    try {
+      const contextDocuments: Document[] = (documents || []).filter(
+        (d: Document) => d && d.id !== selectedDoc.id
+      );
+
+      const parsed = parseDocument(selectedDoc.extractedText || '');
+      const analysis = analyzeQuestionnaire(
+        selectedDoc,
+        parsed.questions || [],
+        contextDocuments,
+        parsed.requirements || []
+      ) as any;
+
+      setResponses(analysis.responses || []);
+      setCompleteness(analysis.overallCompleteness || 0);
+      setRequirementFindings(analysis.requirementFindings || []);
+
+      addQuestionnaireAnalysis(analysis);
+    } catch (error) {
+      console.error('Questionnaire analysis error:', error);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedDocumentId) {
+      setResponses([]);
+      setRequirementFindings([]);
+      setCompleteness(0);
+      return;
+    }
+
+    const existing =
+      (getQuestionnaireAnalysisByDocumentId && getQuestionnaireAnalysisByDocumentId(selectedDocumentId)) ||
+      (questionnaireAnalyses && questionnaireAnalyses.find((qa: any) => qa.documentId === selectedDocumentId));
+
+    if (existing) {
+      setResponses(existing.responses || []);
+      setCompleteness(existing.overallCompleteness || 0);
+      setRequirementFindings(existing.requirementFindings || []);
+    } else {
+      setResponses([]);
+      setRequirementFindings([]);
+      setCompleteness(0);
+    }
+  }, [selectedDocumentId, questionnaireAnalyses, getQuestionnaireAnalysisByDocumentId]);
+
+  const getStatusStyles = (status: string) => {
+    switch (status) {
+      case 'complete':
+        return 'bg-emerald-50 text-emerald-700 border-emerald-100';
+      case 'incomplete':
+        return 'bg-rose-50 text-rose-700 border-rose-100';
+      case 'needs-review':
+        return 'bg-amber-50 text-amber-700 border-amber-100';
+      default:
+        return 'bg-slate-50 text-slate-700 border-slate-100';
+    }
+  };
+
+  const counts = useMemo(() => {
+    const complete = responses.filter(r => r.status === 'complete').length;
+    const needsReview = responses.filter(r => r.status === 'needs-review').length;
+    const incomplete = responses.filter(r => r.status === 'incomplete').length;
+
+    const reqMissing = requirementFindings.filter(r => r.providerResponseStrength === 'missing').length;
+    const reqBrief = requirementFindings.filter(r => r.providerResponseStrength === 'brief').length;
+    const reqAdequate = requirementFindings.filter(r => r.providerResponseStrength === 'adequate').length;
+
+    return { complete, needsReview, incomplete, reqMissing, reqBrief, reqAdequate };
+  }, [responses, requirementFindings]);
+
+  const exportPdf = () => {
+    if (!selectedDoc || responses.length === 0) return;
+
+    const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const margin = 48;
+    let y = 56;
+
+    const addTitle = (t: string) => {
+      pdf.setFont('Helvetica', 'bold');
+      pdf.setFontSize(16);
+      pdf.text(t, margin, y);
+      y += 22;
+    };
+
+    const addH2 = (t: string) => {
+      pdf.setFont('Helvetica', 'bold');
+      pdf.setFontSize(12);
+      pdf.text(t, margin, y);
+      y += 16;
+    };
+
+    const addBody = (t: string) => {
+      pdf.setFont('Helvetica', 'normal');
+      pdf.setFontSize(10);
+      const lines = pdf.splitTextToSize(t, pageW - margin * 2);
+      pdf.text(lines, margin, y);
+      y += lines.length * 12;
+    };
+
+    const ensureSpace = (needed = 80) => {
+      if (y + needed > pdf.internal.pageSize.getHeight() - 56) {
+        pdf.addPage();
+        y = 56;
+      }
+    };
+
+    addTitle('Pre-Inspection Questionnaire Review Report (Evidence-Informed)');
+    pdf.setFont('Helvetica', 'normal');
+    pdf.setFontSize(10);
+    pdf.text(`Document: ${selectedDoc.name}`, margin, y); y += 14;
+    pdf.text(`Generated: ${new Date().toLocaleString()}`, margin, y); y += 18;
+
+    // Executive summary
+    addH2('Executive summary');
+    addBody(
+      `Overall questionnaire completeness estimate: ${Math.round(completeness)}%. ` +
+      `Q items — Complete: ${counts.complete}, Needs review: ${counts.needsReview}, Incomplete: ${counts.incomplete}. ` +
+      `Requirements (R1–R21) — Adequate: ${counts.reqAdequate}, Brief: ${counts.reqBrief}, Missing: ${counts.reqMissing}.`
+    );
+
+    // Simple bar (no colors specified requirement; jsPDF uses default stroke)
+    ensureSpace(40);
+    const barW = pageW - margin * 2;
+    const filled = Math.max(0, Math.min(1, completeness / 100));
+    pdf.rect(margin, y, barW, 10);
+    pdf.rect(margin, y, barW * filled, 10, 'F');
+    y += 22;
+
+    // Q1–Q15
+    addH2('Section 1 — Questionnaire items (Q1–Q15)');
+    addBody('Note: Q1, Q2, Q3, Q4, Q7 and Q10 are treated as extraction-only fields. Other questions receive cautious, evidence-informed suggestions.');
+
+    const sortedQs = [...responses].sort((a, b) => {
+      const na = parseInt((a.questionId || '').replace(/\D/g, ''), 10) || 9999;
+      const nb = parseInt((b.questionId || '').replace(/\D/g, ''), 10) || 9999;
+      return na - nb;
+    });
+
+    for (const r of sortedQs) {
+      ensureSpace(110);
+      pdf.setFont('Helvetica', 'bold');
+      pdf.setFontSize(11);
+      pdf.text(`${r.questionId} — ${r.question}`, margin, y);
+      y += 14;
+
+      pdf.setFont('Helvetica', 'normal');
+      pdf.setFontSize(10);
+
+      const statusLabel = r.status.replace('-', ' ');
+      const factual = FACTUAL_QS.has((r.questionId || '').toUpperCase());
+
+      addBody(`Status: ${statusLabel}${factual ? ' (extraction-only)' : ''}`);
+
+      if (r.originalAnswer) {
+        addBody(`Extracted response:\n${r.originalAnswer}`);
+      } else {
+        addBody('Extracted response: [Not stated]');
+      }
+
+      if (!factual) {
+        if (r.recommendations?.length) {
+          addBody(`Recommendations (high-level):\n- ${r.recommendations.join('\n- ')}`);
+        }
+      }
+
+      // Evidence sources only (doc names)
+      const sources = (r.evidenceReferences || []).map(e => e.source).filter(Boolean);
+      if (sources.length) addBody(`Evidence signals detected in: ${Array.from(new Set(sources)).join(', ')}`);
+
+      y += 6;
+    }
+
+    // Requirements
+    addH2('Section 2 — GDC requirements (R1–R21)');
+    addBody('Each requirement is checked for: (1) presence/strength of narrative response, (2) evidence signals in other uploaded documents (doc names only), and (3) whether the “Attach evidence” prompt was detected.');
+
+    for (const rf of requirementFindings) {
+      ensureSpace(130);
+      pdf.setFont('Helvetica', 'bold');
+      pdf.setFontSize(11);
+      pdf.text(`${rf.id} — Provider narrative: ${rf.providerResponseStrength.toUpperCase()}`, margin, y);
+      y += 14;
+
+      addBody(`Requirement statement (best-effort extracted): ${rf.requirementText || '[Not extracted]'}`);
+
+      const evSources = (rf.evidenceSignals || []).map(s => s.source);
+      if (evSources.length) addBody(`Evidence signals detected in: ${Array.from(new Set(evSources)).join(', ')}`);
+      else addBody('Evidence signals detected in: [None detected — verification needed]');
+
+      if (rf.gaps?.length) addBody(`Key gaps:\n- ${rf.gaps.join('\n- ')}`);
+      if (rf.recommendations?.length) addBody(`Recommendations (high-level):\n- ${rf.recommendations.join('\n- ')}`);
+
+      y += 6;
+    }
+
+    // Submission readiness checklist
+    addH2('Section 3 — Submission readiness checklist (high-level)');
+    const missingQs = sortedQs.filter(r => r.status === 'incomplete').map(r => r.questionId);
+    const weakReqs = requirementFindings
+      .filter(r => r.providerResponseStrength !== 'adequate')
+      .map(r => r.id);
+
+    addBody(
+      `Items missing or incomplete:\n` +
+      `- Questions incomplete: ${missingQs.length ? missingQs.join(', ') : 'None detected'}\n` +
+      `- Requirements needing strengthening: ${weakReqs.length ? weakReqs.join(', ') : 'None detected'}\n\n` +
+      `Recommendation: ensure each narrative response explains how assurance is achieved (governance, monitoring, evidence artefacts), and attach appropriate evidence for each requirement where requested.`
+    );
+
+    pdf.save(`Questionnaire_Report_${selectedDoc.id}_${Date.now()}.pdf`);
+  };
+
+  return (
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 tracking-tight">Pre-Inspection Questionnaire</h1>
+          <p className="text-gray-500 mt-1">
+            Evidence-informed, cautious enhancement suggestions using all uploaded documents (excluding the questionnaire).
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            className="rounded-xl border-gray-200"
+            icon={<Download className="w-4 h-4" />}
+            disabled={!selectedDoc || responses.length === 0}
+            onClick={exportPdf}
+          >
+            Export PDF
+          </Button>
+          <Button
+            onClick={analyzeSelectedQuestionnaire}
+            disabled={!isQuestionnaireSelected || isAnalyzing}
+            loading={isAnalyzing}
+            className="rounded-xl shadow-lg shadow-primary-100"
+            icon={<Sparkles className="w-4 h-4" />}
+          >
+            Run AI Analysis
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Left: selection & summary */}
+        <div className="lg:col-span-1 space-y-8">
+          <Card className="border-none shadow-sm bg-white rounded-3xl overflow-hidden">
+            <CardHeader title="Select Document" subtitle="Questionnaire candidates detected from all uploads" />
+            <div className="p-6 pt-0">
+              {questionnaireCandidates.length === 0 ? (
+                <div className="text-center py-10 bg-gray-50 rounded-2xl border border-dashed border-gray-200">
+                  <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                  <p className="text-sm text-gray-500 px-4">
+                    No questionnaire-like documents detected yet. Upload the questionnaire PDF/Word in Documents.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {questionnaireCandidates.map((doc: Document) => (
+                    <div
+                      key={doc.id}
+                      className={`group flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 cursor-pointer
+                        ${selectedDocumentId === doc.id
+                          ? 'border-primary-500 bg-primary-50/50 shadow-sm'
+                          : 'border-gray-100 hover:border-primary-200 hover:bg-gray-50/50'}`}
+                      onClick={() => setSelectedDocument(doc.id)}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`p-2 rounded-xl transition-colors ${selectedDocumentId === doc.id ? 'bg-white text-primary-600' : 'bg-gray-50 text-gray-400 group-hover:text-primary-500'}`}>
+                          <FileText className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-bold text-gray-900 truncate text-sm">{doc.name}</p>
+                          <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mt-0.5">
+                            Category: {doc.category?.replace(/-/g, ' ') || 'unknown'}
+                          </p>
+                        </div>
+                      </div>
+                      {selectedDocumentId === doc.id && (
+                        <CheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0" />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {/* Summary */}
+          {responses.length > 0 && (
+            <Card className="border-none shadow-sm bg-white rounded-3xl overflow-hidden">
+              <CardHeader title="Summary" subtitle="High-level only; verify against evidence" />
+              <div className="p-6 pt-0 space-y-6">
+                <div className="p-5 bg-gray-50 rounded-2xl border border-gray-100">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm font-bold text-gray-700">Questionnaire completeness</span>
+                    <span className={`text-sm font-bold ${completeness >= 80 ? 'text-emerald-600' : completeness >= 50 ? 'text-amber-600' : 'text-rose-600'}`}>
+                      {Math.round(completeness)}%
+                    </span>
+                  </div>
+                  <ProgressBar
+                    progress={completeness}
+                    className="h-2.5 rounded-full bg-gray-200"
+                    color={completeness >= 80 ? 'success' : completeness >= 50 ? 'warning' : 'danger'}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-3">
+                  <div className="flex items-center justify-between p-4 bg-emerald-50/50 border border-emerald-100 rounded-2xl">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle className="w-5 h-5 text-emerald-500" />
+                      <span className="text-sm font-bold text-emerald-900">Complete</span>
+                    </div>
+                    <span className="text-lg font-black text-emerald-700">{counts.complete}</span>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-amber-50/50 border border-amber-100 rounded-2xl">
+                    <div className="flex items-center gap-3">
+                      <Info className="w-5 h-5 text-amber-500" />
+                      <span className="text-sm font-bold text-amber-900">Needs review</span>
+                    </div>
+                    <span className="text-lg font-black text-amber-700">{counts.needsReview}</span>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-rose-50/50 border border-rose-100 rounded-2xl">
+                    <div className="flex items-center gap-3">
+                      <AlertCircle className="w-5 h-5 text-rose-500" />
+                      <span className="text-sm font-bold text-rose-900">Incomplete</span>
+                    </div>
+                    <span className="text-lg font-black text-rose-700">{counts.incomplete}</span>
+                  </div>
+                </div>
+
+                <div className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-2xl p-4 leading-relaxed">
+                  Context used: all uploaded documents <span className="font-bold">except</span> the selected questionnaire.
+                  Recommendations are intentionally cautious and should be verified against evidence.
+                </div>
+              </div>
+            </Card>
+          )}
+        </div>
+
+        {/* Right: results */}
+        <div className="lg:col-span-2">
+          {responses.length > 0 ? (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between px-2">
+                <h2 className="text-xl font-bold text-gray-900">
+                  {view === 'questions' ? 'Q1–Q15 results' : 'R1–R21 requirements'}
+                </h2>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${
+                      view === 'questions' ? 'bg-primary-50 border-primary-100 text-primary-700' : 'bg-white border-gray-100 text-gray-500 hover:bg-gray-50'
+                    }`}
+                    onClick={() => setView('questions')}
+                  >
+                    <span className="inline-flex items-center gap-2"><ListChecks className="w-4 h-4" /> Questions</span>
+                  </button>
+                  <button
+                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${
+                      view === 'requirements' ? 'bg-primary-50 border-primary-100 text-primary-700' : 'bg-white border-gray-100 text-gray-500 hover:bg-gray-50'
+                    }`}
+                    onClick={() => setView('requirements')}
+                  >
+                    <span className="inline-flex items-center gap-2"><ShieldCheck className="w-4 h-4" /> Requirements</span>
+                  </button>
+                </div>
+              </div>
+
+              {view === 'questions' ? (
+                <div className="space-y-4">
+                  {[...responses]
+                    .sort((a, b) => {
+                      const na = parseInt((a.questionId || '').replace(/\D/g, ''), 10) || 9999;
+                      const nb = parseInt((b.questionId || '').replace(/\D/g, ''), 10) || 9999;
+                      return na - nb;
+                    })
+                    .map((response, index) => {
+                      const qid = (response.questionId || '').toUpperCase();
+                      const isFactual = FACTUAL_QS.has(qid);
+
+                      return (
+                        <Card key={response.questionId} className="border-none shadow-sm bg-white rounded-3xl overflow-hidden group hover:shadow-md transition-all duration-300">
+                          <div className="p-6">
+                            <div className="flex items-start justify-between gap-4 mb-5">
+                              <div className="flex items-start gap-4">
+                                <div className="w-10 h-10 bg-gray-50 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-gray-500 text-sm border border-gray-100">
+                                  {index + 1}
+                                </div>
+                                <div>
+                                  <h4 className="font-bold text-gray-900 leading-tight">
+                                    {response.question}
+                                  </h4>
+                                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">
+                                    {qid} {isFactual ? '• extraction-only' : '• analysis'}
+                                  </p>
+                                </div>
+                              </div>
+                              <span className={`px-3 py-1 text-[10px] font-bold rounded-lg uppercase tracking-wider border flex-shrink-0 ${getStatusStyles(response.status)}`}>
+                                {response.status.replace('-', ' ')}
+                              </span>
+                            </div>
+
+                            <div className="space-y-5">
+                              <div className="relative pl-4 border-l-2 border-gray-100">
+                                <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">
+                                  {isFactual ? 'Extracted value' : 'Current response'}
+                                </p>
+                                <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+                                  {response.originalAnswer || '[Not stated]'}
+                                </p>
+                              </div>
+
+                              {!isFactual && response.suggestedAnswer && (
+                                <div className="bg-primary-50/50 border border-primary-100 rounded-2xl p-5">
+                                  <div className="flex items-center gap-2 mb-3">
+                                    <div className="p-1.5 bg-white rounded-lg shadow-sm">
+                                      <Sparkles className="w-4 h-4 text-primary-600" />
+                                    </div>
+                                    <p className="text-sm font-bold text-primary-900">Cautious improvement (high-level)</p>
+                                  </div>
+                                  <pre className="whitespace-pre-wrap text-sm text-primary-800 leading-relaxed">
+                                    {response.suggestedAnswer}
+                                  </pre>
+                                </div>
+                              )}
+
+                              {!isFactual && response.recommendations?.length > 0 && (
+                                <div className="pt-5 border-t border-gray-50">
+                                  <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-3">
+                                    Recommendations (cautious)
+                                  </p>
+                                  <ul className="space-y-2">
+                                    {response.recommendations.map((rec, i) => (
+                                      <li key={i} className="flex items-start gap-2 text-sm text-gray-600">
+                                        <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-gray-300 flex-shrink-0"></div>
+                                        {rec}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {/* Evidence sources only */}
+                              {response.evidenceReferences?.length > 0 && (
+                                <div className="pt-5 border-t border-gray-50">
+                                  <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-3">
+                                    Evidence signals (document names)
+                                  </p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {Array.from(new Set(response.evidenceReferences.map(e => e.source))).map((s) => (
+                                      <span key={s} className="px-2.5 py-1 rounded-lg bg-gray-50 border border-gray-100 text-xs font-bold text-gray-600">
+                                        {s}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </Card>
+                      );
+                    })}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {requirementFindings.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center py-20 bg-white rounded-3xl border border-gray-100 shadow-sm">
+                      <div className="w-24 h-24 bg-primary-50 rounded-3xl flex items-center justify-center mb-6">
+                        <ShieldCheck className="w-12 h-12 text-primary-300" />
+                      </div>
+                      <h3 className="text-xl font-bold text-gray-900">No requirements detected yet</h3>
+                      <p className="text-gray-500 text-center max-w-sm mt-2 px-6">
+                        Upload a questionnaire file that includes the R1–R21 requirement sections, then run the analysis.
+                      </p>
+                    </div>
+                  ) : (
+                    requirementFindings.map((r) => {
+                      const tone =
+                        r.providerResponseStrength === 'adequate'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                          : r.providerResponseStrength === 'brief'
+                          ? 'bg-amber-50 text-amber-700 border-amber-100'
+                          : 'bg-rose-50 text-rose-700 border-rose-100';
+
+                      return (
+                        <Card key={r.id} className="border-none shadow-sm bg-white rounded-3xl overflow-hidden group hover:shadow-md transition-all duration-300">
+                          <div className="p-6">
+                            <div className="flex items-start justify-between gap-4 mb-5">
+                              <div className="flex items-start gap-4">
+                                <div className="w-10 h-10 bg-gray-50 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-gray-500 text-sm border border-gray-100">
+                                  {r.requirementNumber}
+                                </div>
+                                <div>
+                                  <h4 className="font-bold text-gray-900 leading-tight">
+                                    {r.id} — Requirement narrative check
+                                  </h4>
+                                  <p className="text-sm text-gray-500 mt-1 leading-relaxed">
+                                    {r.requirementText || '[Requirement statement not extracted]'}
+                                  </p>
+                                </div>
+                              </div>
+                              <span className={`px-3 py-1 text-[10px] font-bold rounded-lg uppercase tracking-wider border flex-shrink-0 ${tone}`}>
+                                {r.providerResponseStrength}
+                              </span>
+                            </div>
+
+                            <div className="space-y-5">
+                              <div className="pt-2">
+                                <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">
+                                  Evidence prompt detected
+                                </p>
+                                <p className="text-sm text-gray-700">
+                                  {r.evidencePromptPresent ? 'Yes (Attach evidence prompt detected)' : 'Not detected (verify template completeness)'}
+                                </p>
+                              </div>
+
+                              <div className="pt-5 border-t border-gray-50">
+                                <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-3">
+                                  Evidence signals (document names)
+                                </p>
+                                {r.evidenceSignals?.length ? (
+                                  <div className="flex flex-wrap gap-2">
+                                    {Array.from(new Set(r.evidenceSignals.map(e => e.source))).map((s) => (
+                                      <span key={s} className="px-2.5 py-1 rounded-lg bg-gray-50 border border-gray-100 text-xs font-bold text-gray-600">
+                                        {s}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="text-sm text-gray-500">None detected — verification needed.</p>
+                                )}
+                              </div>
+
+                              {r.gaps?.length > 0 && (
+                                <div className="pt-5 border-t border-gray-50">
+                                  <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-3">
+                                    Gaps
+                                  </p>
+                                  <ul className="space-y-2">
+                                    {r.gaps.map((g, i) => (
+                                      <li key={i} className="flex items-start gap-2 text-sm text-gray-600">
+                                        <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-gray-300 flex-shrink-0"></div>
+                                        {g}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {r.recommendations?.length > 0 && (
+                                <div className="pt-5 border-t border-gray-50">
+                                  <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-3">
+                                    Recommendations (high-level)
+                                  </p>
+                                  <ul className="space-y-2">
+                                    {r.recommendations.map((rec, i) => (
+                                      <li key={i} className="flex items-start gap-2 text-sm text-gray-600">
+                                        <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-gray-300 flex-shrink-0"></div>
+                                        {rec}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </Card>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="h-full flex flex-col items-center justify-center py-20 bg-white rounded-3xl border border-gray-100 shadow-sm">
+              <div className="w-24 h-24 bg-primary-50 rounded-3xl flex items-center justify-center mb-6">
+                <Sparkles className="w-12 h-12 text-primary-300" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900">Ready for Questionnaire Analysis</h3>
+              <p className="text-gray-500 text-center max-w-sm mt-2 px-6">
+                Select a questionnaire candidate and click “Run AI Analysis”.
+                The engine uses other uploaded documents to inform high-level gaps and cautious recommendations.
+              </p>
+              <Button
+                onClick={analyzeSelectedQuestionnaire}
+                disabled={!isQuestionnaireSelected || isAnalyzing}
+                loading={isAnalyzing}
+                className="mt-8 rounded-xl px-8"
+              >
+                Run Analysis Now
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Questionnaire;

@@ -1,0 +1,75 @@
+export interface ParsedSection {
+  id: string;
+  title: string;
+  content: string;
+  type: 'question' | 'requirement' | 'other';
+  order: number;
+}
+
+export interface ParsedQuestion {
+  id: string;
+  question: string;
+  answer?: string;
+}
+
+export interface ParsedDocument {
+  sections: ParsedSection[];
+  questions: ParsedQuestion[];
+}
+
+/**
+ * Robust parser for GDC-style questionnaires.
+ * Handles multi-line requirements and avoids duplicate detection.
+ */
+export function parseDocument(text: string): ParsedDocument {
+  const sections: ParsedSection[] = [];
+  const questions: ParsedQuestion[] = [];
+
+  const normalized = text.replace(/\r\n/g, '\n');
+
+  /* ---------------- QUESTIONS ---------------- */
+  const qRegex = /Q\s*(\d+)\.?\s*(.+?)(?:\n|\r\n)([\s\S]*?)(?=\nQ\s*\d+\.|\nRequirement\s*\d+|$)/gi;
+  let qMatch;
+  let qOrder = 0;
+
+  while ((qMatch = qRegex.exec(normalized)) !== null) {
+    questions.push({
+      id: `Q${qMatch[1]}`,
+      question: qMatch[2].trim(),
+      answer: qMatch[3].trim(),
+    });
+
+    sections.push({
+      id: `Q${qMatch[1]}`,
+      title: `Question ${qMatch[1]}`,
+      content: qMatch[3].trim(),
+      type: 'question',
+      order: qOrder++,
+    });
+  }
+
+  /* ---------------- REQUIREMENTS ---------------- */
+  const rRegex =
+    /(Requirement\s*(\d+))([\s\S]*?)(?=Requirement\s*\d+|$)/gi;
+
+  let rOrder = 0;
+  let rMatch;
+
+  while ((rMatch = rRegex.exec(normalized)) !== null) {
+    const reqNumber = rMatch[2];
+    const body = rMatch[3].trim();
+
+    sections.push({
+      id: `R${reqNumber}`,
+      title: `Requirement ${reqNumber}`,
+      content: body,
+      type: 'requirement',
+      order: rOrder++,
+    });
+  }
+
+  return {
+    sections,
+    questions,
+  };
+}

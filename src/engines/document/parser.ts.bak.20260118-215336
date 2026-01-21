@@ -1,0 +1,225 @@
+export interface ParsedSection {
+  title: string;
+  content: string;
+  level: number;
+  startIndex: number;
+  endIndex: number;
+}
+
+export interface ParsedDocument {
+  sections: ParsedSection[];
+  questions: ParsedQuestion[];
+  tables: string[][];
+  keyPhrases: string[];
+
+  // NEW (non-breaking): extracted requirement blocks if present
+  requirements?: ParsedRequirement[];
+}
+
+export interface ParsedQuestion {
+  id: string;
+  question: string;
+  answer?: string;
+  context: string;
+}
+
+export interface ParsedRequirement {
+  id: string; // "R1".."R21"
+  requirementNumber: number;
+  title: string; // "Requirement 1"
+  requirementText: string; // the requirement statement (best-effort)
+  providerPrompt?: string; // "Describe, in detail..." line(s) if present
+  providerResponse?: string; // best-effort extracted narrative response
+  evidencePromptPresent: boolean; // "Attach evidence..." found in the block
+  rawBlock: string; // entire block (for debugging/future)
+}
+
+export const parseDocument = (text: string): ParsedDocument => {
+  const sections = extractSections(text);
+  const questions = extractQuestions(text);
+  const tables = extractTables(text);
+  const keyPhrases = extractKeyPhrases(text);
+
+  // NEW: requirement extraction (best-effort, non-breaking)
+  const requirements = extractRequirements(text);
+
+  return {
+    sections,
+    questions,
+    tables,
+    keyPhrases,
+    requirements,
+  };
+};
+
+const extractSections = (text: string): ParsedSection[] => {
+  const sections: ParsedSection[] = [];
+
+  const headerPatterns = [
+    /^(Q\d+\.?\s*.+?)$/gim,
+    /^(Requirement\s*\d+.*)$/gim,
+    /^(Standard\s*\d+:?\s*.+?)$/gim,
+    /^(\d+\.\s*.+?)$/gim,
+    /^(#{1,3}\s*.+?)$/gim,
+  ];
+
+  for (const pattern of headerPatterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      sections.push({
+        title: (match[1] || match[0]).trim(),
+        content: '',
+        level: 1,
+        startIndex: match.index,
+        endIndex: match.index + match[0].length,
+      });
+    }
+  }
+
+  sections.sort((a, b) => a.startIndex - b.startIndex);
+
+  for (let i = 0; i < sections.length; i++) {
+    const nextStart = sections[i + 1]?.startIndex ?? text.length;
+    sections[i].content = text.slice(sections[i].endIndex, nextStart).trim();
+    sections[i].endIndex = nextStart;
+  }
+
+  return sections;
+};
+
+const extractQuestions = (text: string): ParsedQuestion[] => {
+  const questions: ParsedQuestion[] = [];
+
+  // More tolerant Q pattern: supports "Q1:" or "Q1." and multi-line question stems
+  const qaPattern =
+    /(^|\n)\s*Q\s*(\d+)\s*[:.]\s*([^\n]+)\n+([\s\S]*?)(?=\n\s*Q\s*\d+\s*[:.]|\n\s*Requirement\s*\d+|\n\s*Standard\s*\d+|$)/gi;
+
+  let match: RegExpExecArray | null;
+  while ((match = qaPattern.exec(text)) !== null) {
+    const qNum = match[2];
+    const qStem = match[3] || '';
+    const answer = match[4] || '';
+
+    questions.push({
+      id: `Q${String(qNum).trim()}`,
+      question: qStem.trim(),
+      answer: answer.trim(),
+      context: text.slice(Math.max(0, match.index - 120), match.index),
+    });
+  }
+
+  return questions;
+};
+
+const extractRequirements = (text: string): ParsedRequirement[] => {
+  const out: ParsedRequirement[] = [];
+  const t = text || '';
+  if (!t.trim()) return out;
+
+  // Capture blocks starting at "Requirement N"
+  const rx =
+    /(^|\n)\s*Requirement\s*(\d{1,2})\s*:\s*([\s\S]*?)(?=\n\s*Requirement\s*\d{1,2}\s*:|\n\s*Standard\s*\d+|\n\s*Q\s*\d+\s*[:.]|$)/gi;
+
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(t)) !== null) {
+    const n = parseInt(m[2], 10);
+    if (!Number.isFinite(n)) continue;
+
+    const rawBlock = (m[0] || '').trim();
+    const body = (m[3] || '').trim();
+
+    const evidencePromptPresent = /attach\s+evidence/i.test(body) || /attach\s+evidence/i.test(rawBlock);
+
+    // Extract prompt lines if present
+    // Many questionnaires include: "Describe, in detail, your plans..."
+    const promptMatch = body.match(/Describe,\s*in\s*detail[\s\S]*?(?=\n|$)/i);
+    const providerPrompt = promptMatch ? promptMatch[0].trim() : undefined;
+
+    // Heuristic: provider response is what comes after prompt line(s)
+    let providerResponse: string | undefined = undefined;
+    if (providerPrompt) {
+      const idx = body.toLowerCase().indexOf(providerPrompt.toLowerCase());
+      if (idx >= 0) {
+        const after = body.slice(idx + providerPrompt.length).trim();
+        // Stop before "Attach evidence" if present
+        providerResponse = after.split(/attach\s+evidence/i)[0].trim();
+        if (!providerResponse) providerResponse = undefined;
+      }
+    } else {
+      // If no prompt detected, treat the whole body minus evidence line as response-ish
+      const candidate = body.split(/attach\s+evidence/i)[0].trim();
+      providerResponse = candidate || undefined;
+    }
+
+    // Requirement statement: typically the first sentence(s) before prompt
+    let requirementText = body;
+    if (providerPrompt) {
+      const low = body.toLowerCase();
+      const pLow = providerPrompt.toLowerCase();
+      const pIdx = low.indexOf(pLow);
+      if (pIdx > 0) {
+        requirementText = body.slice(0, pIdx).trim();
+      }
+    }
+    // Keep statement reasonably short if it includes the prompt
+    requirementText = requirementText.replace(/\s+/g, ' ').trim();
+
+    out.push({
+      id: `R${n}`,
+      requirementNumber: n,
+      title: `Requirement ${n}`,
+      requirementText,
+      providerPrompt,
+      providerResponse,
+      evidencePromptPresent,
+      rawBlock,
+    });
+  }
+
+  // Ensure R1..R21 in order
+  out.sort((a, b) => a.requirementNumber - b.requirementNumber);
+  return out;
+};
+
+const extractTables = (text: string): string[][] => {
+  const tables: string[][] = [];
+  const lines = (text || '').split('\n');
+  let currentTable: string[] = [];
+
+  for (const line of lines) {
+    if (line.includes('\t') || line.includes('|')) {
+      currentTable.push(line);
+    } else if (currentTable.length > 0) {
+      if (currentTable.length > 1) tables.push(currentTable);
+      currentTable = [];
+    }
+  }
+  if (currentTable.length > 1) tables.push(currentTable);
+
+  return tables;
+};
+
+const extractKeyPhrases = (text: string): string[] => {
+  const keyPhrases: string[] = [];
+  const lower = (text || '').toLowerCase();
+
+  const gdcTerms = [
+    'patient safety',
+    'fitness to practise',
+    'learning outcomes',
+    'clinical competence',
+    'supervision',
+    'assessment',
+    'quality assurance',
+    'external examiner',
+    'student progression',
+    'consent',
+    'clinical governance',
+  ];
+
+  for (const term of gdcTerms) {
+    if (lower.includes(term)) keyPhrases.push(term);
+  }
+
+  return keyPhrases;
+};

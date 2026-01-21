@@ -1,0 +1,231 @@
+import type { Document, QuestionnaireAnalysis, QuestionnaireResponse, Evidence } from '@/types';
+import { generateId } from '@/utils/helpers';
+
+/**
+ * Lightweight parsing type - we intentionally keep this flexible
+ * because different parsers can output different shapes.
+ */
+type ParsedQuestion = {
+  id?: string;
+  questionId?: string;
+  question?: string;
+  text?: string;
+  prompt?: string;
+  answer?: string;
+  response?: string;
+  value?: string;
+};
+
+/**
+ * Normalize and safely extract a question id, question text, and answer.
+ */
+function normalizeParsedQuestion(q: ParsedQuestion, index: number) {
+  const questionId =
+    (q.questionId || q.id || `Q${index + 1}`).toString().trim();
+
+  const question =
+    (q.question || q.text || q.prompt || `Question ${index + 1}`).toString().trim();
+
+  const originalAnswer =
+    (q.answer || q.response || q.value || '').toString().trim();
+
+  return { questionId, question, originalAnswer };
+}
+
+function safeDocText(doc: Document): string {
+  const text = (doc.extractedText || doc.content || '').toString();
+  return text;
+}
+
+/**
+ * Tokenize into simple keywords (safe heuristic).
+ */
+function keywordsFromQuestion(qText: string): string[] {
+  const raw = qText
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const stop = new Set([
+    'the','and','or','to','of','in','on','for','with','a','an','is','are','was','were','be','been',
+    'this','that','these','those','by','as','at','from','it','its','your','you','we','our',
+    'please','provide','describe','outline','explain','details','including','include',
+    'qualification','course','programme','program','institution','provider'
+  ]);
+
+  const parts = raw.split(' ').filter(Boolean);
+  const uniq: string[] = [];
+  for (const p of parts) {
+    if (p.length < 3) continue;
+    if (stop.has(p)) continue;
+    if (!uniq.includes(p)) uniq.push(p);
+    if (uniq.length >= 10) break;
+  }
+  return uniq;
+}
+
+/**
+ * Find high-signal excerpts from context docs using keyword hit scoring.
+ * Returns only short excerpts to avoid UI overload.
+ */
+function findContextSignals(contextDocs: Document[], qText: string) {
+  const keys = keywordsFromQuestion(qText);
+  if (keys.length === 0) return { evidence: [] as Evidence[], summary: '' };
+
+  const hits: { score: number; doc: Document; snippet: string }[] = [];
+
+  for (const doc of contextDocs) {
+    const text = safeDocText(doc);
+    if (!text) continue;
+
+    const lower = text.toLowerCase();
+
+    // quick scoring
+    let score = 0;
+    for (const k of keys) {
+      if (lower.includes(k)) score += 1;
+    }
+    if (score === 0) continue;
+
+    // build a small snippet around first hit
+    let idx = -1;
+    for (const k of keys) {
+      const i = lower.indexOf(k);
+      if (i >= 0) { idx = i; break; }
+    }
+    const start = Math.max(0, idx - 120);
+    const end = Math.min(text.length, idx + 240);
+    const snippet = text.slice(start, end).replace(/\s+/g, ' ').trim();
+
+    hits.push({ score, doc, snippet });
+  }
+
+  hits.sort((a, b) => b.score - a.score);
+
+  const top = hits.slice(0, 2);
+  const evidence: Evidence[] = top.map((h, i) => ({
+    id: `${h.doc.id}-ctx-${i}`,
+    text: h.snippet.slice(0, 260),
+    source: h.doc.name,
+    relevanceScore: Math.min(1, h.score / 10),
+  }));
+
+  const summary =
+    top.length === 0
+      ? ''
+      : `Potentially relevant information was identified in ${top
+          .map((t) => t.doc.name)
+          .slice(0, 2)
+          .join(' and ')}.`;
+
+  return { evidence, summary };
+}
+
+/**
+ * Status logic (simple and predictable):
+ * - complete: answer >= 25 chars
+ * - needs-review: answer 1..24 chars
+ * - incomplete: empty
+ */
+function classifyAnswer(answer: string): 'complete' | 'needs-review' | 'incomplete' {
+  const a = (answer || '').trim();
+  if (!a) return 'incomplete';
+  if (a.length < 25) return 'needs-review';
+  return 'complete';
+}
+
+function cautiousRecommendations(question: string, status: 'complete' | 'needs-review' | 'incomplete', contextSummary: string) {
+  const recs: string[] = [];
+
+  if (status === 'incomplete') {
+    recs.push('A complete response may be required for this item; consider providing a clear, specific answer aligned with the question stem.');
+  } else if (status === 'needs-review') {
+    recs.push('The current response may be brief; consider expanding with operational detail (who does what, how it is governed, and how it is evidenced).');
+  } else {
+    recs.push('The response appears present; consider confirming that it is fully supported by documentary evidence and current practice.');
+  }
+
+  if (contextSummary) {
+    recs.push(`${contextSummary} Consider cross-checking your response against those documents for consistency.`);
+  } else {
+    recs.push('If available, consider referencing relevant uploaded evidence (e.g., inspection reports, policy documents) to strengthen credibility.');
+  }
+
+  recs.push('Where appropriate, consider adding measurable specifics (roles, frequency, governance route, monitoring evidence) to reduce ambiguity.');
+
+  return recs;
+}
+
+function cautiousSuggestedAnswer(question: string, status: 'complete' | 'needs-review' | 'incomplete') {
+  if (status === 'complete') return undefined;
+
+  // High-level improvement template (no invented facts)
+  return [
+    'Suggested enhancement (high-level):',
+    '- Provide a concise statement that directly answers the question.',
+    '- Add operational detail (responsible role/unit, process steps, oversight/governance).',
+    '- Where applicable, briefly indicate what evidence exists in your uploaded documents (without over-claiming).',
+  ].join('\n');
+}
+
+/**
+ * Main entry point used by Questionnaire.tsx
+ * Implements A=2 by consuming all uploaded docs except the questionnaire doc.
+ */
+export function analyzeQuestionnaire(
+  questionnaireDoc: Document,
+  parsedQuestions: ParsedQuestion[],
+  contextDocuments: Document[]
+): QuestionnaireAnalysis {
+  const responses: QuestionnaireResponse[] = [];
+
+  for (let i = 0; i < (parsedQuestions?.length || 0); i++) {
+    const pq = normalizeParsedQuestion(parsedQuestions[i], i);
+    const status = classifyAnswer(pq.originalAnswer);
+
+    const { evidence, summary } = findContextSignals(contextDocuments || [], pq.question);
+
+    const gaps: string[] = [];
+    if (status === 'incomplete') {
+      gaps.push('No response detected for this question.');
+    } else if (status === 'needs-review') {
+      gaps.push('Response may not contain sufficient operational detail to be auditable.');
+    } else {
+      // even if complete, we can flag a soft gap if no context signals found
+      if (!summary) gaps.push('No clearly matching evidence was identified in the uploaded context documents (may require verification).');
+    }
+
+    responses.push({
+      questionId: pq.questionId,
+      question: pq.question,
+      originalAnswer: pq.originalAnswer || undefined,
+      suggestedAnswer: cautiousSuggestedAnswer(pq.question, status),
+      recommendations: cautiousRecommendations(pq.question, status, summary),
+      evidenceReferences: evidence, // UI will show high-level only (we’ll not render excerpts)
+      status,
+    });
+  }
+
+  const total = responses.length || 1;
+  const completeCount = responses.filter(r => r.status === 'complete').length;
+  const needsReviewCount = responses.filter(r => r.status === 'needs-review').length;
+
+  const overallCompleteness = Math.round(((completeCount + needsReviewCount * 0.5) / total) * 100);
+
+  const gapsIdentified = responses.flatMap(r => r.status !== 'complete' ? r.recommendations.slice(0, 1) : []).slice(0, 8);
+  const bestPracticeRecommendations = [
+    'Consider ensuring each response is evidence-aligned and operationally specific (roles, governance, frequency, monitoring).',
+    'Consider reviewing internal consistency across the questionnaire and uploaded inspection/evidence documents.',
+  ];
+
+  return {
+    id: generateId(),
+    documentId: questionnaireDoc.id,
+    timestamp: new Date(),
+    responses,
+    overallCompleteness,
+    gapsIdentified,
+    bestPracticeRecommendations,
+  };
+}

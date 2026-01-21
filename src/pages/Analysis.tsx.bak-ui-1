@@ -1,0 +1,325 @@
+import React, { useState } from 'react';
+import { 
+  Play, 
+  CheckCircle, 
+  AlertTriangle, 
+  XCircle,
+  ChevronDown,
+  ChevronUp,
+  FileText,
+  Download
+} from 'lucide-react';
+import { Card, CardHeader } from '@/components/common/Card';
+import { Button } from '@/components/common/Button';
+import { ProgressBar } from '@/components/common/ProgressBar';
+import { useDocumentStore } from '@/store/documentStore';
+import { useAnalysisStore } from '@/store/analysisStore';
+import { analyzeDocument, AnalysisContext } from '@/engines/analysis/analyzer';
+import { evaluateResults } from '@/engines/analysis/evaluator';
+import { GDC_STANDARDS } from '@/config/gdcStandards';
+import { COMPLIANCE_COLORS } from '@/utils/constants';
+import { ComplianceStatus, RequirementResult } from '@/types';
+
+const Analysis: React.FC = () => {
+  const { documents, selectedDocumentId, referenceDocumentIds, getDocumentById } = useDocumentStore();
+  const { addAnalysis, analyses, isAnalyzing, setAnalyzing, analysisProgress, setAnalysisProgress } = useAnalysisStore();
+  
+  const [expandedStandards, setExpandedStandards] = useState<number[]>([1, 2, 3]);
+  const [currentResults, setCurrentResults] = useState<RequirementResult[] | null>(null);
+
+  const selectedDocument = selectedDocumentId ? getDocumentById(selectedDocumentId) : null;
+  const existingAnalysis = selectedDocumentId 
+    ? analyses.find(a => a.documentId === selectedDocumentId)
+    : null;
+
+  const runAnalysis = async () => {
+    if (!selectedDocument) return;
+
+    setAnalyzing(true);
+    setAnalysisProgress(0);
+
+    try {
+      // Simulate progress
+      const progressInterval = setInterval(() => {
+        setAnalysisProgress(prev => Math.min(prev + 10, 90));
+      }, 200);
+
+      const context: AnalysisContext = {
+        document: selectedDocument,
+        referenceDocuments: referenceDocumentIds
+          .map(id => getDocumentById(id))
+          .filter(Boolean) as typeof documents,
+      };
+
+      const results = analyzeDocument(context);
+      setCurrentResults(results);
+
+      clearInterval(progressInterval);
+      setAnalysisProgress(100);
+
+      // Create analysis result
+      const analysisResult = evaluateResults(selectedDocument.id, results);
+      addAnalysis(analysisResult);
+
+    } catch (error) {
+      console.error('Analysis error:', error);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const toggleStandard = (standardId: number) => {
+    setExpandedStandards(prev =>
+      prev.includes(standardId)
+        ? prev.filter(id => id !== standardId)
+        : [...prev, standardId]
+    );
+  };
+
+  const getStatusIcon = (status: ComplianceStatus) => {
+    switch (status) {
+      case 'met':
+        return <CheckCircle className="w-5 h-5 text-green-500" />;
+      case 'partially-met':
+        return <AlertTriangle className="w-5 h-5 text-yellow-500" />;
+      case 'not-met':
+        return <XCircle className="w-5 h-5 text-red-500" />;
+    }
+  };
+
+  const getResultForRequirement = (reqId: number): RequirementResult | undefined => {
+    const results = currentResults || existingAnalysis?.requirementResults;
+    return results?.find(r => r.requirementId === reqId);
+  };
+
+  const calculateStandardProgress = (standardId: number): number => {
+    const standard = GDC_STANDARDS.find(s => s.id === standardId);
+    if (!standard) return 0;
+
+    const results = currentResults || existingAnalysis?.requirementResults;
+    if (!results) return 0;
+
+    const standardResults = results.filter(r =>
+      standard.requirements.some(req => req.id === r.requirementId)
+    );
+
+    const metCount = standardResults.filter(r => r.status === 'met').length;
+    const partialCount = standardResults.filter(r => r.status === 'partially-met').length;
+    
+    return Math.round(((metCount + partialCount * 0.5) / standardResults.length) * 100);
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Page Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">GDC Requirements Analysis</h1>
+          <p className="text-gray-500 mt-1">
+            Evaluate documents against 21 GDC Standards for Education requirements
+          </p>
+        </div>
+        <Button
+          onClick={runAnalysis}
+          disabled={!selectedDocument || isAnalyzing}
+          loading={isAnalyzing}
+          icon={<Play className="w-4 h-4" />}
+        >
+          {isAnalyzing ? 'Analyzing...' : 'Run Analysis'}
+        </Button>
+      </div>
+
+      {/* Selected Document */}
+      <Card>
+        <CardHeader title="Selected Document" />
+        {selectedDocument ? (
+          <div className="flex items-center gap-4 p-4 bg-primary-50 rounded-lg">
+            <FileText className="w-8 h-8 text-primary-600" />
+            <div>
+              <p className="font-medium text-gray-900">{selectedDocument.name}</p>
+              <p className="text-sm text-gray-500">
+                {selectedDocument.category.replace(/-/g, ' ')} • 
+                {referenceDocumentIds.length} reference documents selected
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center py-8 text-gray-500">
+            <p>No document selected. Please select a document from the Documents page.</p>
+          </div>
+        )}
+
+        {isAnalyzing && (
+          <div className="mt-4">
+            <ProgressBar 
+              progress={analysisProgress} 
+              showLabel 
+              label="Analyzing document..." 
+            />
+          </div>
+        )}
+      </Card>
+
+      {/* Analysis Results */}
+      {(currentResults || existingAnalysis) && (
+        <div className="space-y-4">
+          {/* Summary */}
+          <Card>
+            <CardHeader 
+              title="Analysis Summary"
+              action={
+                <Button variant="outline" size="sm" icon={<Download className="w-4 h-4" />}>
+                  Export PDF
+                </Button>
+              }
+            />
+            <div className="grid grid-cols-3 gap-4">
+              {['met', 'partially-met', 'not-met'].map((status) => {
+                const results = currentResults || existingAnalysis?.requirementResults || [];
+                const count = results.filter(r => r.status === status).length;
+                const colors = COMPLIANCE_COLORS[status as ComplianceStatus];
+                
+                return (
+                  <div key={status} className={`p-4 rounded-lg ${colors.bg}`}>
+                    <div className="flex items-center gap-2">
+                      {getStatusIcon(status as ComplianceStatus)}
+                      <span className={`font-medium ${colors.text}`}>
+                        {status.replace('-', ' ').toUpperCase()}
+                      </span>
+                    </div>
+                    <p className={`text-2xl font-bold mt-2 ${colors.text}`}>{count}</p>
+                    <p className={`text-sm ${colors.text}`}>requirements</p>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+
+          {/* Standards Breakdown */}
+          {GDC_STANDARDS.map((standard) => (
+            <Card key={standard.id}>
+              <button
+                onClick={() => toggleStandard(standard.id)}
+                className="w-full flex items-center justify-between p-4 hover:bg-gray-50 rounded-lg transition-colors"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center">
+                    <span className="text-xl font-bold text-primary-600">
+                      {standard.id}
+                    </span>
+                  </div>
+                  <div className="text-left">
+                    <h3 className="font-semibold text-gray-900">{standard.name}</h3>
+                    <p className="text-sm text-gray-500">
+                      {standard.requirements.length} requirements
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="w-32">
+                    <ProgressBar 
+                      progress={calculateStandardProgress(standard.id)}
+                      size="sm"
+                      color={calculateStandardProgress(standard.id) >= 70 ? 'success' : 
+                             calculateStandardProgress(standard.id) >= 40 ? 'warning' : 'danger'}
+                    />
+                  </div>
+                  {expandedStandards.includes(standard.id) 
+                    ? <ChevronUp className="w-5 h-5 text-gray-400" />
+                    : <ChevronDown className="w-5 h-5 text-gray-400" />
+                  }
+                </div>
+              </button>
+
+              {expandedStandards.includes(standard.id) && (
+                <div className="px-4 pb-4 space-y-3">
+                  {standard.requirements.map((req) => {
+                    const result = getResultForRequirement(req.id);
+                    const colors = result 
+                      ? COMPLIANCE_COLORS[result.status]
+                      : { bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200' };
+
+                    return (
+                      <div
+                        key={req.id}
+                        className={`p-4 rounded-lg border ${colors.border} ${colors.bg}`}
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              {result && getStatusIcon(result.status)}
+                              <h4 className={`font-medium ${colors.text}`}>
+                                Requirement {req.id}: {req.title}
+                              </h4>
+                            </div>
+                            <p className="text-sm text-gray-600 mt-1">
+                              {req.description.slice(0, 200)}...
+                            </p>
+                          </div>
+                          {result && (
+                            <span className={`px-2 py-1 text-xs font-medium rounded-full 
+                              ${colors.bg} ${colors.text} border ${colors.border}`}>
+                              {Math.round(result.confidenceScore * 100)}% confidence
+                            </span>
+                          )}
+                        </div>
+
+                        {result && result.evidence.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-gray-200">
+                            <p className="text-sm font-medium text-gray-700 mb-2">
+                              Evidence Found:
+                            </p>
+                            <div className="space-y-2">
+                              {result.evidence.slice(0, 2).map((ev) => (
+                                <div
+                                  key={ev.id}
+                                  className="p-2 bg-white rounded border border-gray-200"
+                                >
+                                  <p className="text-sm text-gray-600">
+                                    "{ev.text.slice(0, 150)}..."
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {result && result.gaps.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-gray-200">
+                            <p className="text-sm font-medium text-gray-700 mb-2">
+                              Gaps Identified:
+                            </p>
+                            <ul className="list-disc list-inside text-sm text-gray-600">
+                              {result.gaps.map((gap, i) => (
+                                <li key={i}>{gap}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {result && result.recommendations.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-gray-200">
+                            <p className="text-sm font-medium text-gray-700 mb-2">
+                              Recommendations:
+                            </p>
+                            <ul className="list-disc list-inside text-sm text-gray-600">
+                              {result.recommendations.map((rec, i) => (
+                                <li key={i}>{rec}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default Analysis;

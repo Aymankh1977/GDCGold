@@ -1,0 +1,397 @@
+import type { Document, QuestionnaireAnalysis, QuestionnaireResponse, Evidence } from '@/types';
+import { generateId } from '@/utils/helpers';
+
+/**
+ * We keep parsing flexible: different parsers can output different shapes.
+ */
+type ParsedQuestion = {
+  id?: string;
+  questionId?: string;
+  question?: string;
+  text?: string;
+  prompt?: string;
+  answer?: string;
+  response?: string;
+  value?: string;
+};
+
+type ParsedRequirement = {
+  id: string; // R1..R21
+  requirementNumber: number;
+  title: string;
+  requirementText: string;
+  providerPrompt?: string;
+  providerResponse?: string;
+  evidencePromptPresent: boolean;
+  rawBlock: string;
+};
+
+type RequirementFinding = {
+  id: string; // R1..R21
+  requirementNumber: number;
+  requirementText: string;
+
+  // What the questionnaire currently contains (best-effort)
+  providerResponsePresent: boolean;
+  providerResponseStrength: 'missing' | 'brief' | 'adequate';
+
+  // Evidence signals from other uploaded docs (doc names only in UI)
+  evidenceSignals: { source: string; relevanceScore: number }[];
+
+  // High-level gaps/recommendations (cautious)
+  gaps: string[];
+  recommendations: string[];
+
+  // Evidence prompt check
+  evidencePromptPresent: boolean;
+};
+
+function normalizeParsedQuestion(q: ParsedQuestion, index: number) {
+  const questionId = (q.questionId || q.id || `Q${index + 1}`).toString().trim();
+  const question = (q.question || q.text || q.prompt || `Question ${index + 1}`).toString().trim();
+  const originalAnswer = (q.answer || q.response || q.value || '').toString().trim();
+  return { questionId, question, originalAnswer };
+}
+
+function safeDocText(doc: Document): string {
+  return (doc.extractedText || doc.content || '').toString();
+}
+
+function keywordsFromText(qText: string): string[] {
+  const raw = qText
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const stop = new Set([
+    'the','and','or','to','of','in','on','for','with','a','an','is','are','was','were','be','been',
+    'this','that','these','those','by','as','at','from','it','its','your','you','we','our',
+    'please','provide','describe','outline','explain','details','including','include',
+    'qualification','course','programme','program','institution','provider',
+    'will','must','should','have','has','had'
+  ]);
+
+  const parts = raw.split(' ').filter(Boolean);
+  const uniq: string[] = [];
+  for (const p of parts) {
+    if (p.length < 3) continue;
+    if (stop.has(p)) continue;
+    if (!uniq.includes(p)) uniq.push(p);
+    if (uniq.length >= 12) break;
+  }
+  return uniq;
+}
+
+/**
+ * Evidence signals across other documents:
+ * returns doc names + lightweight relevance score.
+ * (UI stays high-level; no long excerpts)
+ */
+function findEvidenceSignals(contextDocs: Document[], queryText: string) {
+  const keys = keywordsFromText(queryText);
+  if (keys.length === 0) return [] as { source: string; relevanceScore: number }[];
+
+  const hits: { score: number; doc: Document }[] = [];
+
+  for (const doc of contextDocs) {
+    const text = safeDocText(doc);
+    if (!text) continue;
+
+    const lower = text.toLowerCase();
+    let score = 0;
+    for (const k of keys) {
+      if (lower.includes(k)) score += 1;
+    }
+    if (score > 0) hits.push({ score, doc });
+  }
+
+  hits.sort((a, b) => b.score - a.score);
+
+  return hits.slice(0, 6).map(h => ({
+    source: h.doc.name,
+    relevanceScore: Math.min(1, h.score / 12),
+  }));
+}
+
+/**
+ * Short excerpt evidence (kept for internal data; UI may not render it).
+ */
+function findContextEvidence(contextDocs: Document[], queryText: string) {
+  const keys = keywordsFromText(queryText);
+  if (keys.length === 0) return { evidence: [] as Evidence[], summary: '' };
+
+  const hits: { score: number; doc: Document; snippet: string }[] = [];
+
+  for (const doc of contextDocs) {
+    const text = safeDocText(doc);
+    if (!text) continue;
+
+    const lower = text.toLowerCase();
+    let score = 0;
+    for (const k of keys) if (lower.includes(k)) score += 1;
+    if (score === 0) continue;
+
+    let idx = -1;
+    for (const k of keys) {
+      const i = lower.indexOf(k);
+      if (i >= 0) { idx = i; break; }
+    }
+    const start = Math.max(0, idx - 120);
+    const end = Math.min(text.length, idx + 240);
+    const snippet = text.slice(start, end).replace(/\s+/g, ' ').trim();
+
+    hits.push({ score, doc, snippet });
+  }
+
+  hits.sort((a, b) => b.score - a.score);
+  const top = hits.slice(0, 2);
+
+  const evidence: Evidence[] = top.map((h, i) => ({
+    id: `${h.doc.id}-ctx-${i}`,
+    text: h.snippet.slice(0, 260),
+    source: h.doc.name,
+    relevanceScore: Math.min(1, h.score / 12),
+  }));
+
+  const summary =
+    top.length === 0
+      ? ''
+      : `Signals were detected in: ${top.map(t => t.doc.name).join(' and ')}.`;
+
+  return { evidence, summary };
+}
+
+/**
+ * Q1,2,3,4,7,10 should NOT be “analysed”.
+ * They are straightforward extraction fields.
+ */
+const FACTUAL_QS = new Set(['Q1','Q2','Q3','Q4','Q7','Q10']);
+
+function classifyAnswer(answer: string): 'complete' | 'needs-review' | 'incomplete' {
+  const a = (answer || '').trim();
+  if (!a) return 'incomplete';
+  if (a.length < 25) return 'needs-review';
+  return 'complete';
+}
+
+function factualResponse(question: string, qid: string, answer: string): QuestionnaireResponse {
+  const a = (answer || '').trim();
+  if (!a) {
+    return {
+      questionId: qid,
+      question,
+      originalAnswer: undefined,
+      suggestedAnswer: undefined,
+      recommendations: ['Not stated in the uploaded questionnaire. Provide the exact required information as requested.'],
+      evidenceReferences: [],
+      status: 'incomplete',
+    };
+  }
+  return {
+    questionId: qid,
+    question,
+    originalAnswer: a,
+    suggestedAnswer: undefined,
+    recommendations: [],
+    evidenceReferences: [],
+    status: 'complete',
+  };
+}
+
+function cautiousRecommendations(question: string, status: 'complete' | 'needs-review' | 'incomplete', contextSummary: string) {
+  const recs: string[] = [];
+
+  if (status === 'incomplete') {
+    recs.push('A complete response may be required for this item; provide a clear, specific answer aligned with the question stem.');
+  } else if (status === 'needs-review') {
+    recs.push('The response may be brief; consider adding operational detail (who does what, governance route, monitoring evidence).');
+  } else {
+    recs.push('The response appears present; consider confirming it is fully supported by documentary evidence and current practice.');
+  }
+
+  if (contextSummary) {
+    recs.push(`${contextSummary} Consider cross-checking your response against those documents for consistency.`);
+  } else {
+    recs.push('If available, reference relevant uploaded evidence (e.g., inspection reports, policy documents) to strengthen credibility.');
+  }
+
+  recs.push('Where appropriate, add measurable specifics (roles, frequency, governance route, monitoring artefacts) to reduce ambiguity.');
+  return recs;
+}
+
+function cautiousSuggestedAnswer(status: 'complete' | 'needs-review' | 'incomplete') {
+  if (status === 'complete') return undefined;
+  return [
+    'Suggested enhancement (high-level):',
+    '- Provide a concise statement that directly answers the question.',
+    '- Add operational detail (responsible role/unit, process steps, oversight/governance).',
+    '- Briefly indicate what evidence exists in your uploaded documents (without over-claiming).',
+  ].join('\n');
+}
+
+/**
+ * Requirement evidence keyword matrix (high-level, cautious)
+ * This does NOT claim compliance; it only supports “signal detection”.
+ */
+function requirementKeywords(reqNumber: number): string[] {
+  const map: Record<number, string[]> = {
+    1: ['competent', 'competence', 'pre-clinical', 'simulation', 'skills', 'assessment', 'progression'],
+    2: ['consent', 'patient information', 'information leaflet', 'agreement', 'recorded', 'students treat'],
+    3: ['safe', 'risk', 'legislation', 'equality', 'diversity', 'governance', 'clinical governance', 'infection control'],
+    4: ['supervision', 'appropriate supervision', 'ratio', 'stage of development', 'oversight'],
+    5: ['supervisor', 'training', 'calibration', 'equality', 'diversity', 'registration', 'GDC', 'UK regulatory'],
+    6: ['raise concerns', 'whistleblowing', 'candour', 'incident', 'policy', 'support', 'no detriment'],
+    7: ['patient safety', 'incident reporting', 'risk register', 'record issues', 'notify', 'regulator'],
+    8: ['fitness to practise', 'FTP', 'guidance', 'standards for the dental team', 'professionalism'],
+    9: ['quality management', 'curriculum mapping', 'learning outcomes', 'governance', 'responsibility', 'review cycle'],
+    10: ['concerns', 'threats', 'mitigation', 'action plan', 'notify', 'GDC'],
+    11: ['external examiner', 'quality assurance', 'QAA', 'feedback', 'patient feedback', 'programme development'],
+    12: ['placements', 'quality assure', 'feedback', 'patient feedback', 'student feedback', 'monitoring'],
+    13: ['safe beginner', 'attainment', 'assessment principles', 'assurance', 'learning outcomes', 'blueprint'],
+    14: ['record', 'assessment records', 'monitor', 'portfolio', 'logbook', 'centrally record'],
+    15: ['breadth', 'patients', 'procedures', 'experience', 'sufficient occasions', 'exposure'],
+    16: ['valid', 'reliable', 'fit for purpose', 'standard setting', 'quality assured', 'monitor'],
+    17: ['multi-source feedback', 'MSF', 'peers', 'patients', 'dental team', 'feedback'],
+    18: ['feedback', 'reflect', 'reflection', 'support', 'improve performance'],
+    19: ['assessor', 'examiner', 'training', 'experience', 'registration', 'equality', 'diversity'],
+    20: ['external examiner', 'report', 'rigorous', 'equity', 'fairly conducted', 'responsibilities'],
+    21: ['fair', 'criteria', 'standard expected', 'standard setting', 'summative'],
+  };
+  return map[reqNumber] || ['quality', 'assurance', 'assessment', 'patient safety'];
+}
+
+function strengthFromText(text?: string): 'missing' | 'brief' | 'adequate' {
+  const t = (text || '').trim();
+  if (!t) return 'missing';
+  if (t.length < 80) return 'brief';
+  return 'adequate';
+}
+
+function buildRequirementFindings(
+  requirements: ParsedRequirement[],
+  contextDocs: Document[]
+): RequirementFinding[] {
+  const findings: RequirementFinding[] = [];
+
+  for (const r of requirements) {
+    const strength = strengthFromText(r.providerResponse);
+    const providerResponsePresent = strength !== 'missing';
+
+    const kw = requirementKeywords(r.requirementNumber).join(' ');
+    const evidenceSignals = findEvidenceSignals(contextDocs, kw);
+
+    const gaps: string[] = [];
+    const recs: string[] = [];
+
+    if (!providerResponsePresent) {
+      gaps.push('No provider narrative response detected for this requirement.');
+      recs.push('Add a clear narrative describing plans and how assurance will be achieved (roles, processes, governance, monitoring).');
+    } else if (strength === 'brief') {
+      gaps.push('Provider narrative response may be too brief to be auditable.');
+      recs.push('Expand with operational detail (responsible roles, governance pathway, monitoring cadence, evidence artefacts).');
+    } else {
+      recs.push('Narrative response appears present; confirm it explicitly explains “how you assure” the requirement is met (not only what you do).');
+    }
+
+    if (r.evidencePromptPresent && evidenceSignals.length === 0) {
+      gaps.push('No strong evidence signals were detected across uploaded documents for this requirement (verification needed).');
+      recs.push('Consider uploading or referencing supporting documents (policies/SOPs/QA reports/assessment governance evidence) relevant to this requirement.');
+    } else if (evidenceSignals.length > 0) {
+      recs.push('Evidence signals were detected in other uploaded documents. Cross-check wording for consistency and avoid over-claiming.');
+    }
+
+    if (!r.evidencePromptPresent) {
+      recs.push('The “Attach evidence” prompt was not detected in the requirement block; verify that the questionnaire template section is complete.');
+    }
+
+    findings.push({
+      id: r.id,
+      requirementNumber: r.requirementNumber,
+      requirementText: r.requirementText,
+      providerResponsePresent,
+      providerResponseStrength: strength,
+      evidenceSignals,
+      gaps,
+      recommendations: recs,
+      evidencePromptPresent: r.evidencePromptPresent,
+    });
+  }
+
+  return findings;
+}
+
+/**
+ * Main entry point used by Questionnaire.tsx
+ * - Uses all uploaded docs except the selected questionnaire as context (A=2)
+ * - Q1,2,3,4,7,10 are extraction-only
+ * - Remaining Qs keep cautious analysis
+ * - Requirements are analysed separately (Option A)
+ */
+export function analyzeQuestionnaire(
+  questionnaireDoc: Document,
+  parsedQuestions: ParsedQuestion[],
+  contextDocuments: Document[],
+  parsedRequirements?: ParsedRequirement[]
+): QuestionnaireAnalysis & { requirementFindings?: RequirementFinding[] } {
+  const responses: QuestionnaireResponse[] = [];
+  const contextDocs = contextDocuments || [];
+
+  for (let i = 0; i < (parsedQuestions?.length || 0); i++) {
+    const pq = normalizeParsedQuestion(parsedQuestions[i], i);
+    const qid = pq.questionId.toUpperCase();
+
+    // Factual extraction only
+    if (FACTUAL_QS.has(qid)) {
+      responses.push(factualResponse(pq.question, qid, pq.originalAnswer));
+      continue;
+    }
+
+    // Analytical questions
+    const status = classifyAnswer(pq.originalAnswer);
+    const { evidence, summary } = findContextEvidence(contextDocs, pq.question);
+
+    const recs = cautiousRecommendations(pq.question, status, summary);
+    const suggested = cautiousSuggestedAnswer(status);
+
+    responses.push({
+      questionId: qid,
+      question: pq.question,
+      originalAnswer: pq.originalAnswer || undefined,
+      suggestedAnswer: suggested,
+      recommendations: recs,
+      evidenceReferences: evidence, // UI can show doc names only
+      status,
+    });
+  }
+
+  const total = responses.length || 1;
+  const completeCount = responses.filter(r => r.status === 'complete').length;
+  const needsReviewCount = responses.filter(r => r.status === 'needs-review').length;
+
+  const overallCompleteness = Math.round(((completeCount + needsReviewCount * 0.5) / total) * 100);
+
+  const gapsIdentified = responses
+    .filter(r => r.status !== 'complete')
+    .flatMap(r => r.recommendations.slice(0, 1))
+    .slice(0, 10);
+
+  const bestPracticeRecommendations = [
+    'Ensure every narrative response is operationally specific (roles, governance route, monitoring cadence, evidence artefacts).',
+    'Cross-check internal consistency across the questionnaire and uploaded inspection/policy/evidence documents.',
+    'For each requirement, explicitly state how assurance is achieved (not only what is done).',
+  ];
+
+  const requirementFindings = buildRequirementFindings(parsedRequirements || [], contextDocs);
+
+  return {
+    id: generateId(),
+    documentId: questionnaireDoc.id,
+    timestamp: new Date(),
+    responses,
+    overallCompleteness,
+    gapsIdentified,
+    bestPracticeRecommendations,
+    requirementFindings,
+  };
+}

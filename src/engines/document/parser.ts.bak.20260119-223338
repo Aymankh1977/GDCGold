@@ -1,0 +1,90 @@
+export interface ParsedSection {
+  id: string;
+  title: string;
+  content: string;
+  type: 'question' | 'requirement' | 'other';
+  order: number;
+}
+
+export interface ParsedQuestion {
+  id: string; // Q1..Q15
+  question: string;
+  answer?: string;
+}
+
+export interface ParsedDocument {
+  sections: ParsedSection[];
+  questions: ParsedQuestion[];
+}
+
+/**
+ * GDC Questionnaire parser (robust, requirement-aware).
+ * - Extracts Q1..Qn blocks
+ * - Extracts Requirement 1..n blocks (including multi-line descriptions)
+ * - Avoids duplicate section artifacts
+ */
+export function parseDocument(text: string): ParsedDocument {
+  const normalized = (text || '').replace(/\r\n/g, '\n');
+
+  const sections: ParsedSection[] = [];
+  const questions: ParsedQuestion[] = [];
+
+  // ------------------------
+  // QUESTIONS (Q1..Qn)
+  // ------------------------
+  const qRegex =
+    /(?:^|\n)\s*Q\s*(\d{1,2})\.?\s*([^\n]+)\n+([\s\S]*?)(?=\n\s*Q\s*\d{1,2}\.|\n\s*Requirement\s*\d{1,2}\b|$)/gi;
+
+  let qMatch: RegExpExecArray | null;
+  let qOrder = 0;
+
+  while ((qMatch = qRegex.exec(normalized)) !== null) {
+    const qNum = qMatch[1];
+    const qText = (qMatch[2] || '').trim();
+    const ans = (qMatch[3] || '').trim();
+
+    questions.push({
+      id: `Q${qNum}`,
+      question: qText,
+      answer: ans,
+    });
+
+    sections.push({
+      id: `Q${qNum}`,
+      title: `Q${qNum}: ${qText}`.trim(),
+      content: ans,
+      type: 'question',
+      order: qOrder++,
+    });
+  }
+
+  // ------------------------
+  // REQUIREMENTS (Requirement 1..n)
+  // ------------------------
+  // Capture full block from "Requirement X" until the next "Requirement Y" or end.
+  const rRegex =
+    /(?:^|\n)\s*(Requirement\s*(\d{1,2})\b[\s\S]*?)(?=\n\s*Requirement\s*\d{1,2}\b|$)/gi;
+
+  let rMatch: RegExpExecArray | null;
+  let rOrder = 0;
+
+  while ((rMatch = rRegex.exec(normalized)) !== null) {
+    const whole = (rMatch[1] || '').trim();
+    const rNum = (rMatch[2] || '').trim();
+    if (!rNum) continue;
+
+    // Title line is first line of block (helps UI), content is full block
+    const firstLine = whole.split('\n')[0]?.trim() || `Requirement ${rNum}`;
+
+    sections.push({
+      id: `R${rNum}`,
+      title: firstLine,
+      content: whole,
+      type: 'requirement',
+      order: rOrder++,
+    });
+  }
+
+  // If nothing matched, return gracefully
+  return { sections, questions };
+}

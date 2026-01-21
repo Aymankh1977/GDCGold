@@ -1,0 +1,29 @@
+# Node
+node_modules/
+dist/
+build/
+
+# Vite
+.vite/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+
+# PDFs & uploads (VERY IMPORTANT for your project)
+*.pdf
+uploads/
+extracted/
+cache/
+
+# Backups
+*.bak
+*.bak_*

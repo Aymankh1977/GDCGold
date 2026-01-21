@@ -1,0 +1,383 @@
+import type { Document, QuestionnaireAnalysis, QuestionnaireResponse, Evidence } from '@/types';
+import { generateId } from '@/utils/helpers';
+import type { ParsedDocument, ParsedSection, ParsedQuestion } from '@/engines/document/parser';
+
+type ItemStatus = 'complete' | 'needs-review' | 'incomplete';
+
+type EvidenceAnchor = {
+  sourceDocId: string;
+  sourceDocName: string;
+  // high-level paraphrase only (no long excerpts)
+  signal: string;
+  score: number;
+};
+
+type RequirementAssessment = {
+  id: string; // R1..R21
+  title: string;
+  status: ItemStatus;
+  currentTextSummary: string;     // what questionnaire currently says (high-level)
+  evidenceAnchors: EvidenceAnchor[]; // evidence-first signals from other documents
+  gaps: string[];                // specific, actionable gap statements
+  actions: string[];             // concrete improvements to add (not generic)
+};
+
+type EnhancedQuestionnaireAnalysis = QuestionnaireAnalysis & {
+  // Added safely as extra fields (won't break existing consumers)
+  extractedFields?: {
+    questionId: string;
+    label: string;
+    value: string;
+    status: ItemStatus;
+  }[];
+  requirementAssessments?: RequirementAssessment[];
+};
+
+const BASIC_QUESTIONS = new Set(['Q1', 'Q2', 'Q3', 'Q4', 'Q7', 'Q10']);
+
+// Evidence-first keyword packs per requirement (lightweight, stable heuristics)
+const REQUIREMENT_KEYWORDS: Record<string, string[]> = {
+  R1: ['competent', 'competence', 'pre-clinical', 'simulation', 'sign-off', 'assessment', 'patient care'],
+  R2: ['patient informed', 'student', 'consent', 'agreement', 'recorded', 'treatment by a student'],
+  R3: ['safe', 'appropriate', 'legislation', 'equality', 'diversity', 'governance', 'compliance'],
+  R4: ['supervision', 'appropriate', 'stage of development', 'escalation', 'ratios'],
+  R5: ['qualified', 'trained', 'equality', 'diversity', 'registration', 'GDC', 'specialist'],
+  R6: ['raise concerns', 'patient safety', 'candour', 'whistleblowing', 'support', 'policy'],
+  R7: ['incident', 'record', 'patient safety', 'notify', 'regulatory body', 'risk'],
+  R8: ['fitness to practise', 'guidance', 'standards for the dental team', 'embedded'],
+  R9: ['quality', 'framework', 'curriculum mapping', 'learning outcomes', 'responsibility'],
+  R10: ['concerns', 'quality management', 'internal reports', 'external reports', 'notify', 'threats'],
+  R11: ['quality assurance', 'external examiner', 'QAA', 'feedback', 'programme development'],
+  R12: ['placements', 'quality assure', 'patient feedback', 'student feedback', 'all locations'],
+  R13: ['assured', 'attainment', 'safe beginner', 'assessment principles', 'evidence'],
+  R14: ['monitor', 'record', 'assessment', 'centrally', 'clinical experience', 'learning outcomes'],
+  R15: ['breadth', 'patients', 'procedures', 'sufficient occasions', 'competency'],
+  R16: ['valid', 'reliable', 'fit for purpose', 'monitor', 'quality assured', 'best practice'],
+  R17: ['feedback', 'dental team', 'peers', 'patients', 'customers', 'variety'],
+  R18: ['improve performance', 'regular feedback', 'reflect', 'reflection'],
+  R19: ['assessors', 'training', 'equality', 'diversity', 'registration', 'skills'],
+  R20: ['external examiners', 'report', 'rigorous', 'equity', 'standard', 'documented'],
+  R21: ['fair', 'clear criteria', 'standard setting', 'summative', 'aware'],
+};
+
+function safeText(doc: Document): string {
+  return (doc.extractedText || (doc as any).content || '').toString();
+}
+
+function normalizeSpace(s: string) {
+  return (s || '').replace(/\s+/g, ' ').trim();
+}
+
+function classifyPresence(value: string): ItemStatus {
+  const v = normalizeSpace(value);
+  if (!v) return 'incomplete';
+  if (v.length < 20) return 'needs-review';
+  return 'complete';
+}
+
+function findEvidenceAnchors(contextDocs: Document[], keywords: string[], max = 3): EvidenceAnchor[] {
+  const anchors: EvidenceAnchor[] = [];
+
+  for (const doc of contextDocs) {
+    if (!doc) continue;
+    const text = safeText(doc);
+    const lower = text.toLowerCase();
+    if (!lower) continue;
+
+    let score = 0;
+    const hitTerms: string[] = [];
+
+    for (const k of keywords) {
+      const kk = k.toLowerCase();
+      if (kk.length < 3) continue;
+      if (lower.includes(kk)) {
+        score += 1;
+        if (hitTerms.length < 4) hitTerms.push(k);
+      }
+    }
+
+    if (score === 0) continue;
+
+    // Evidence-first summary: no long quotes, just a paraphrase label
+    anchors.push({
+      sourceDocId: doc.id,
+      sourceDocName: doc.name,
+      signal: hitTerms.length
+        ? `Signals found relating to: ${hitTerms.join(', ')}`
+        : 'Potentially relevant signals detected',
+      score,
+    });
+  }
+
+  anchors.sort((a, b) => b.score - a.score);
+  return anchors.slice(0, max);
+}
+
+function buildActionableGapsAndActions(opts: {
+  id: string;
+  status: ItemStatus;
+  hasEvidence: boolean;
+  evidenceDocs: string[];
+}): { gaps: string[]; actions: string[] } {
+  const { id, status, hasEvidence, evidenceDocs } = opts;
+
+  const gaps: string[] = [];
+  const actions: string[] = [];
+
+  if (status === 'incomplete') {
+    gaps.push('No usable response detected in the questionnaire for this requirement/item.');
+    actions.push('Add a direct, structured response that explains: (1) what you do, (2) how it is governed, (3) how it is assured/monitored, (4) what evidence demonstrates this.');
+  } else if (status === 'needs-review') {
+    gaps.push('A response exists but appears too brief to be auditable (insufficient operational detail).');
+    actions.push('Expand the response with operational specifics: named governance route, responsible role(s), frequency of review, and how compliance is evidenced.');
+  } else {
+    // complete
+    gaps.push('A response is present; however it should be cross-checked for evidence alignment and auditability.');
+    actions.push('Ensure the response explicitly references how assurance is demonstrated (e.g., sign-offs, QA reports, monitoring records) and aligns with uploaded evidence.');
+  }
+
+  if (hasEvidence) {
+    gaps.push(`Relevant supporting signals exist in uploaded evidence (${evidenceDocs.slice(0, 2).join(' and ')}), but the questionnaire response may not explicitly anchor to them.`);
+    actions.push('Explicitly align the questionnaire narrative to the supporting documents by naming what evidence exists (without over-claiming) and how it is used operationally.');
+  } else {
+    gaps.push('No strong supporting signals were detected in the uploaded evidence set for this specific requirement (this may reflect missing uploads or weak keyword match).');
+    actions.push('If evidence exists (policy/QA/assessment/placement governance), upload it and/or add a brief evidence statement indicating where assurance documentation can be found.');
+  }
+
+  // Requirement-specific “gold” action hints (short, still concrete)
+  if (id === 'R1') {
+    actions.push('Include competence gatekeeping details: pre-clinical assessment criteria, sign-off thresholds, and who authorises progression to patient care.');
+  }
+  if (id === 'R4') {
+    actions.push('State supervision model explicitly: who supervises which activities, escalation rules, and how supervision adequacy is monitored.');
+  }
+  if (id === 'R11') {
+    actions.push('List QA mechanisms: external examiner process, how feedback is collected, and how it drives programme change (with review frequency).');
+  }
+  if (id === 'R13') {
+    actions.push('Explain the “assurance case”: how you confirm attainment across all outcomes and fitness to practise at safe beginner level (triangulation of assessments).');
+  }
+  if (id === 'R21') {
+    actions.push('Describe fairness mechanisms: clear criteria, standard setting for summative assessments, examiner training, and moderation processes.');
+  }
+
+  return { gaps, actions };
+}
+
+/**
+ * Evidence-first questionnaire analysis:
+ * - Extracts admin fields for Q1,Q2,Q3,Q4,Q7,Q10 (no "AI analysis", only presence + extraction)
+ * - Analyses remaining questions using uploaded evidence as primary signal
+ * - Analyses Requirements R1..n from parsed requirement sections
+ */
+export function analyzeQuestionnaire(
+  questionnaireDoc: Document,
+  parsed: ParsedDocument,
+  contextDocuments: Document[]
+): EnhancedQuestionnaireAnalysis {
+  const qSections = parsed?.questions || [];
+  const reqSections = (parsed?.sections || []).filter((s) => s.type === 'requirement');
+
+  // ------------------------
+  // Extracted admin fields
+  // ------------------------
+  const extractedFields: EnhancedQuestionnaireAnalysis['extractedFields'] = [];
+
+  // Map for quick lookup of Q answers
+  const qById = new Map<string, ParsedQuestion>();
+  for (const q of qSections) qById.set(q.id.toUpperCase(), q);
+
+  function getAnswer(qid: string) {
+    return normalizeSpace(qById.get(qid)?.answer || '');
+  }
+
+  const adminLabels: Record<string, string> = {
+    Q1: 'Provider name',
+    Q2: 'Full title of the qualification (as on certificate)',
+    Q3: 'Lead institution delivering the course',
+    Q4: 'Awarding body of the qualification',
+    Q7: 'Delivery locations / campuses / sites (if asked)',
+    Q10: 'Programme start / cohort / intake details (if asked)',
+  };
+
+  for (const qid of Array.from(BASIC_QUESTIONS)) {
+    const value = getAnswer(qid);
+    const status = classifyPresence(value);
+    extractedFields.push({
+      questionId: qid,
+      label: adminLabels[qid] || qid,
+      value: value || '(Not stated in questionnaire)',
+      status,
+    });
+  }
+
+  // ------------------------
+  // Question-by-question analysis (non-admin)
+  // ------------------------
+  const responses: QuestionnaireResponse[] = [];
+
+  const analyticalQuestions = qSections.filter((q) => !BASIC_QUESTIONS.has(q.id.toUpperCase()));
+  for (let i = 0; i < analyticalQuestions.length; i++) {
+    const q = analyticalQuestions[i];
+    const qid = q.id.toUpperCase();
+    const question = (q.question || '').trim() || qid;
+    const originalAnswer = normalizeSpace(q.answer || '');
+    const status = classifyPresence(originalAnswer);
+
+    // Evidence-first: signals from other documents
+    const keywords = Array.from(
+      new Set(
+        question
+          .toLowerCase()
+          .replace(/[^a-z0-9\s-]/g, ' ')
+          .split(/\s+/)
+          .filter((w) => w.length >= 4)
+          .slice(0, 10)
+      )
+    );
+
+    const anchors = findEvidenceAnchors(contextDocuments, keywords, 2);
+    const evidenceDocs = anchors.map((a) => a.sourceDocName);
+
+    const gaps: string[] = [];
+    const recs: string[] = [];
+
+    // Actionable, not generic:
+    if (status === 'incomplete') {
+      gaps.push('The questionnaire does not provide a response for this question.');
+      recs.push('Add a structured response that states: responsibilities, process steps, governance route, monitoring/QA evidence.');
+    } else if (status === 'needs-review') {
+      gaps.push('A response is present but may be too brief to be auditable.');
+      recs.push('Expand with operational specifics (who/what/when/how evidenced).');
+    } else {
+      gaps.push('A response is present; verify it is evidence-aligned and audit-ready.');
+      recs.push('Cross-check the response against uploaded evidence for consistency and completeness.');
+    }
+
+    if (anchors.length) {
+      recs.push(`Evidence-first signals were detected in: ${evidenceDocs.slice(0, 2).join(' and ')}. Align your response to these sources.`);
+    } else {
+      recs.push('No strong evidence signals were detected in uploaded documents for this question; consider uploading relevant evidence or strengthening internal references.');
+    }
+
+    // High-level evidence references (no long excerpts)
+    const evidenceReferences: Evidence[] = anchors.map((a, idx) => ({
+      id: `${questionnaireDoc.id}-${qid}-ev-${idx}`,
+      text: a.signal, // paraphrase label only
+      source: a.sourceDocName,
+      relevanceScore: Math.min(1, a.score / 10),
+    }));
+
+    responses.push({
+      questionId: qid,
+      question,
+      originalAnswer: originalAnswer || undefined,
+      suggestedAnswer: status === 'complete'
+        ? undefined
+        : [
+            'Suggested enhancement (structured, evidence-aligned):',
+            '- Direct answer in 1–2 sentences.',
+            '- Operational detail: responsible role/unit + process steps.',
+            '- Governance/oversight route (committee/lead) + review frequency.',
+            '- Assurance: what monitoring evidence exists and where it is held.',
+          ].join('\n'),
+      recommendations: recs,
+      evidenceReferences,
+      status,
+    });
+  }
+
+  // ------------------------
+  // Requirement assessments (R1..n)
+  // ------------------------
+  const requirementAssessments: RequirementAssessment[] = [];
+
+  // Evidence-first = anchors come from context docs using requirement-specific keyword packs
+  // Questionnaire text summary = what the selected doc says under the requirement block (high-level)
+  for (const sec of reqSections) {
+    const id = (sec.id || '').toUpperCase(); // R1 etc.
+    if (!/^R\d{1,2}$/.test(id)) continue;
+
+    const title = sec.title || `Requirement ${id.replace('R', '')}`;
+
+    // “Current text” is from questionnaire requirement block itself:
+    // we keep high-level summary to avoid dumping raw content.
+    const content = normalizeSpace(sec.content || '');
+
+    // Status is about presence of a plan narrative
+    const status = classifyPresence(content);
+
+    const keywords = REQUIREMENT_KEYWORDS[id] || [];
+    const anchors = findEvidenceAnchors(contextDocuments, keywords, 3);
+    const hasEvidence = anchors.length > 0;
+
+    const { gaps, actions } = buildActionableGapsAndActions({
+      id,
+      status,
+      hasEvidence,
+      evidenceDocs: anchors.map((a) => a.sourceDocName),
+    });
+
+    // High-level summary of what questionnaire currently contains (no long paste)
+    const currentTextSummary =
+      content.length === 0
+        ? '(Not stated in questionnaire requirement section)'
+        : content.length <= 220
+          ? content
+          : `${content.slice(0, 220)}…`;
+
+    requirementAssessments.push({
+      id,
+      title,
+      status,
+      currentTextSummary,
+      evidenceAnchors: anchors,
+      gaps,
+      actions,
+    });
+  }
+
+  // ------------------------
+  // Overall completeness (balanced)
+  // - extracted admin fields are presence-checked
+  // - analytical questions weighted
+  // - requirements weighted more heavily (inspector lens)
+  // ------------------------
+  const adminScore = extractedFields.length
+    ? extractedFields.reduce((acc, x) => acc + (x.status === 'complete' ? 1 : x.status === 'needs-review' ? 0.5 : 0), 0) / extractedFields.length
+    : 0;
+
+  const qScore = responses.length
+    ? responses.reduce((acc, r) => acc + (r.status === 'complete' ? 1 : r.status === 'needs-review' ? 0.5 : 0), 0) / responses.length
+    : 0;
+
+  const rScore = requirementAssessments.length
+    ? requirementAssessments.reduce((acc, r) => acc + (r.status === 'complete' ? 1 : r.status === 'needs-review' ? 0.5 : 0), 0) / requirementAssessments.length
+    : 0;
+
+  // evidence-first weighting: requirements matter most
+  const overallCompleteness = Math.round((adminScore * 0.15 + qScore * 0.35 + rScore * 0.50) * 100);
+
+  // Top gaps + best practice (still cautious)
+  const gapsIdentified = [
+    ...responses.filter(r => r.status !== 'complete').flatMap(r => r.recommendations.slice(0, 1)),
+    ...requirementAssessments.filter(r => r.status !== 'complete').flatMap(r => r.gaps.slice(0, 1)),
+  ].slice(0, 10);
+
+  const bestPracticeRecommendations = [
+    'Evidence-first alignment: ensure each substantive response explicitly matches the strongest supporting uploaded documents and is audit-ready.',
+    'For requirements, provide a structured “assurance case”: roles, processes, monitoring, escalation, and how evidence is generated/held.',
+  ];
+
+  return {
+    id: generateId(),
+    documentId: questionnaireDoc.id,
+    timestamp: new Date(),
+    responses,
+    overallCompleteness,
+    gapsIdentified,
+    bestPracticeRecommendations,
+    extractedFields,
+    requirementAssessments,
+  };
+}

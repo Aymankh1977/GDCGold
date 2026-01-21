@@ -1,0 +1,68 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2867
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 @tailwind base;\
+@tailwind components;\
+@tailwind utilities;\
+\
+@layer base \{\
+  html \{\
+    @apply scroll-smooth;\
+  \}\
+  \
+  body \{\
+    @apply bg-detedtech-background text-detedtech-text font-sans antialiased;\
+  \}\
+\}\
+\
+@layer components \{\
+  .btn-primary \{\
+    @apply bg-detedtech-primary text-white px-4 py-2 rounded-lg font-medium\
+           hover:bg-primary-800 transition-colors duration-200\
+           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2;\
+  \}\
+  \
+  .btn-secondary \{\
+    @apply bg-detedtech-secondary text-white px-4 py-2 rounded-lg font-medium\
+           hover:bg-primary-600 transition-colors duration-200\
+           focus:outline-none focus:ring-2 focus:ring-primary-400 focus:ring-offset-2;\
+  \}\
+  \
+  .btn-accent \{\
+    @apply bg-detedtech-accent text-white px-4 py-2 rounded-lg font-medium\
+           hover:bg-accent-600 transition-colors duration-200\
+           focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-2;\
+  \}\
+  \
+  .card \{\
+    @apply bg-detedtech-surface rounded-xl shadow-lg border border-gray-100 p-6;\
+  \}\
+  \
+  .input-field \{\
+    @apply w-full px-4 py-2 border border-gray-300 rounded-lg\
+           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent\
+           placeholder-gray-400;\
+  \}\
+  \
+  .status-met \{\
+    @apply bg-green-100 text-green-800 border-green-200;\
+  \}\
+  \
+  .status-partially-met \{\
+    @apply bg-yellow-100 text-yellow-800 border-yellow-200;\
+  \}\
+  \
+  .status-not-met \{\
+    @apply bg-red-100 text-red-800 border-red-200;\
+  \}\
+\}\
+\
+@layer utilities \{\
+  .text-gradient \{\
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary-600 to-accent-500;\
+  \}\
+\}}
