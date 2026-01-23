@@ -27,7 +27,7 @@ const PIQ_REQUIREMENTS = [
 ];
 
 function usage() {
-  console.log('Usage: node scripts/piq-standalone-runner.js --piq <piq-txt> --refs <refs-folder>');
+  console.log('Usage: node scripts/piq-standalone-runner.cjs --piq <piq-txt> --refs <refs-folder>');
   process.exit(1);
 }
 
@@ -151,7 +151,6 @@ async function main() {
   for (const req of PIQ_REQUIREMENTS) {
     const evidence = [];
 
-    // search PIQ sentences
     const reqQuery = `${req.title} ${req.description || ''}`;
     const keywords = tokenize(reqQuery);
     for (let i=0;i<piqSentences.length;i++){
@@ -170,7 +169,6 @@ async function main() {
       }
     }
 
-    // search reference index
     const topHits = searchIndex(index, reqQuery, 5);
     for (const h of topHits) {
       evidence.push({
