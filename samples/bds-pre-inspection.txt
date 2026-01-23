@@ -1,0 +1,3 @@
+Provider name: Example University
+Full title of qualification: BDS (Example)
+Program summary: (paste PIQ text here)
