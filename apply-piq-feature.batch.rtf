@@ -1,0 +1,48 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2867
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\
+From: Copilot <copilot@example.com>\
+Date: Thu, 22 Jan 2026 12:00:00 +0000\
+Subject: [PATCH] feature: add PIQ pipeline, reference indexer, analyzer, runner and filesystem storage\
+\
+---\
+ tsconfig.json                                                  |  26 ++++++++++++++++++++++++++\
+ src/config/piq.ts                                              | 156 +++++++++++++++++++++++++++++++++++++++++++++\
+ src/engines/analysis/analyzer.ts                               | 201 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++\
+ src/engines/analysis/runner.ts                                 | 122 +++++++++++++++++++++++++++++++++\
+ src/engines/analysis/store.ts                                  | 103 ++++++++++++++++++++++++++++++\
+ src/engines/GDCAnalysisEngine.ts                               |  52 +++++++++++++\
+ src/engines/questionnaire/recommendationGenerator.ts           |  64 +++++++++++++++\
+ src/engines/referenceFetcher.ts                                |  48 +++++++++++++\
+ src/engines/referenceIndexer.ts                                | 166 ++++++++++++++++++++++++++++++++++++++++++\
+ src/engines/reports/QuestionnairePdfReport.ts                  |  80 ++++++++++++++++\
+ src/engines/piq/ingestor.ts                                    | 135 ++++++++++++++++++++++++++++++\
+ src/engines/piq/validator.ts                                   | 104 +++++++++++++++++++++++++\
+ src/engines/reports/pdfHelpers.ts                              |  26 +++++++\
+ src/engines/GDCAnalysisEngine.ts.old                           |   0\
+ src/types/index.ts                                             | 139 ++++++++++++++++++++++++++++++\
+ scripts/analysis-runner.js                                     | 107 ++++++++++++++++++++++\
+ 16 files changed, 1509 insertions(+)\
+ create mode 100644 src/config/piq.ts\
+ create mode 100644 src/engines/analysis/analyzer.ts\
+ create mode 100644 src/engines/analysis/runner.ts\
+ create mode 100644 src/engines/analysis/store.ts\
+ create mode 100644 src/engines/GDCAnalysisEngine.ts\
+ create mode 100644 src/engines/questionnaire/recommendationGenerator.ts\
+ create mode 100644 src/engines/referenceFetcher.ts\
+ create mode 100644 src/engines/referenceIndexer.ts\
+ create mode 100644 src/engines/reports/QuestionnairePdfReport.ts\
+ create mode 100644 src/engines/piq/ingestor.ts\
+ create mode 100644 src/engines/piq/validator.ts\
+ create mode 100644 src/engines/reports/pdfHelpers.ts\
+ create mode 100644 src/types/index.ts\
+ create mode 100755 scripts/analysis-runner.js\
+-- \
+2.39.2\
+\
+}
