@@ -2,6 +2,59 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { Document, DocumentCategory } from "@/types";
 
+/**
+ * Creates a safe storage wrapper that catches QuotaExceededError and other storage exceptions.
+ * Falls back to an in-memory no-op storage when localStorage fails.
+ * This prevents application crashes when localStorage quota is exceeded.
+ */
+function createSafeStorage() {
+  // In-memory fallback storage
+  let memoryStorage: Record<string, string> = {};
+  let usingFallback = false;
+
+  return {
+    getItem: (name: string): string | null => {
+      try {
+        if (usingFallback) {
+          return memoryStorage[name] ?? null;
+        }
+        return localStorage.getItem(name);
+      } catch (error) {
+        console.warn('[SafeStorage] getItem failed, using memory fallback:', error);
+        usingFallback = true;
+        return memoryStorage[name] ?? null;
+      }
+    },
+    setItem: (name: string, value: string): void => {
+      try {
+        if (usingFallback) {
+          memoryStorage[name] = value;
+          return;
+        }
+        localStorage.setItem(name, value);
+      } catch (error) {
+        // QuotaExceededError or other storage errors
+        console.warn('[SafeStorage] setItem failed (quota exceeded?), falling back to memory:', error);
+        usingFallback = true;
+        memoryStorage[name] = value;
+      }
+    },
+    removeItem: (name: string): void => {
+      try {
+        if (usingFallback) {
+          delete memoryStorage[name];
+          return;
+        }
+        localStorage.removeItem(name);
+      } catch (error) {
+        console.warn('[SafeStorage] removeItem failed, using memory fallback:', error);
+        usingFallback = true;
+        delete memoryStorage[name];
+      }
+    },
+  };
+}
+
 type DocumentState = {
   documents: Document[];
   selectedDocumentId: string | null;
@@ -181,7 +234,7 @@ export const useDocumentStore = create<DocumentState>()(
     {
       name: "detedtech-document-storage",
       version: 2,
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() => createSafeStorage()),
 
       // Persist only data (not UI flags)
       partialize: (state) => ({
