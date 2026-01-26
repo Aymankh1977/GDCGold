@@ -1,7 +1,7 @@
 /**
  * Lightweight test/demo for goldStandardGenerator
  * 
- * This file can be run directly with: ts-node src/analysis/goldStandardGenerator.test.ts
+ * This file can be run directly with: npx tsx src/analysis/goldStandardGenerator.test.ts
  * or via: npm run test (if configured)
  */
 

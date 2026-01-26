@@ -34,4 +34,4 @@ jobs:
       run: npm run build
     
     - name: Run gold standard generator test
-      run: npx tsx src/analysis/goldStandardGenerator.test.ts
+      run: npm run test:gold-standard
