@@ -6,7 +6,6 @@ import {
   generateGoldStandardForRequirement,
   generateGoldStandardsForAll,
   type RequirementInput,
-  type GoldStandard,
 } from './goldStandardGenerator';
 
 describe('goldStandardGenerator', () => {
