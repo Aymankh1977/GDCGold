@@ -12,6 +12,7 @@ export interface DocumentMetadata {
   createdDate?: Date;
   modifiedDate?: Date;
   keywords?: string[];
+  // If document originates from web or a link, store it here
   sourceUrl?: string;
 }
 
@@ -26,9 +27,11 @@ export interface Document {
   metadata?: DocumentMetadata;
   status?: 'pending' | 'processing' | 'completed' | 'error';
   category?: DocumentCategory;
+  // parsed PIQ answers (if the document is a PIQ or has been parsed)
   parsedPIQ?: Record<string, string | null>;
 }
 
+/* GDC domain types */
 export interface GDCRequirement {
   id: number;
   standard?: number;
