@@ -124,12 +124,11 @@ export function generateGoldStandardForRequirement(
  */
 function generateHeuristicGoldStandard(
   requirementId: string,
-  reqNumber: string,
+  _reqNumber: string,
   description?: string,
-  programText?: string
+  _programText?: string
 ): GoldStandardOutput {
   const descLower = (description || '').toLowerCase();
-  const textLower = (programText || '').toLowerCase();
   
   // Detect requirement themes from description
   const isSupervisionRelated = descLower.includes('supervis') || descLower.includes('oversight');

@@ -24,7 +24,6 @@ import { generateId } from '@/utils/helpers';
 const STOP_WORDS = new Set(['how', 'does', 'the', 'and', 'what', 'are', 'you', 'with', 'this', 'for']);
 
 const EXTRACTION_ONLY_QUESTIONS = new Set(['Q1', 'Q2', 'Q3', 'Q4', 'Q7', 'Q10']);
-const ANALYTICAL_QUESTIONS = new Set(['Q5', 'Q6', 'Q8', 'Q9', 'Q11', 'Q12', 'Q13', 'Q14', 'Q15']);
 
 const PRIORITY_REQUIREMENTS = new Set(['R1', 'R4', 'R7', 'R9', 'R16']);
 

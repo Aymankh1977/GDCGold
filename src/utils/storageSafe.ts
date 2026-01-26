@@ -143,7 +143,7 @@ export function createSafeStorage(): SafeStorage {
  * Create a JSON storage wrapper compatible with Zustand's persist middleware.
  * This is a drop-in replacement for createJSONStorage(() => localStorage)
  */
-export function createJSONStorage(getStorage?: () => Storage): any {
+export function createJSONStorage(_getStorage?: () => Storage): any {
   const safeStorage = createSafeStorage();
 
   return {
