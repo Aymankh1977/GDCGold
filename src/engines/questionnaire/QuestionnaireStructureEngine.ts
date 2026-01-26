@@ -72,7 +72,7 @@ function normalizeWhitespace(s: string): string {
 function extractDetectedQBlocks(rawText: string): Array<{ id: QuestionnaireItemId; stem: string; answer: string; start: number }> {
   const text = normalizeWhitespace(rawText);
 
-  const headerRe = /(^|\n)\s*(?:Q\s*(\d{1,2})\b|Question\s*(\d{1,2})\b)\s*[:.\-]?\s*([^\n]{0,240})/gi;
+  const headerRe = /(^|\n)\s*(?:Q\s*(\d{1,2})\b|Question\s*(\d{1,2})\b)\s*[:.~-]?\s*([^\n]{0,240})/gi;
 
   const hits: Array<{ id: QuestionnaireItemId; stem: string; start: number; headerEnd: number }> = [];
   let m: RegExpExecArray | null;
@@ -111,7 +111,7 @@ function extractDetectedQBlocks(rawText: string): Array<{ id: QuestionnaireItemI
 function extractRequirementNarratives(rawText: string): Map<RequirementId, { narrative: string; attachDetected: boolean; detected: boolean; start: number }> {
   const text = normalizeWhitespace(rawText);
 
-  const reqHeaderRe = /(^|\n)\s*Requirement\s*(\d{1,2})\b\s*[:.\-]?\s*/gi;
+  const reqHeaderRe = /(^|\n)\s*Requirement\s*(\d{1,2})\b\s*[:.~-]?\s*/gi;
   const hits: Array<{ id: RequirementId; start: number; headerEnd: number }> = [];
 
   let m: RegExpExecArray | null;
