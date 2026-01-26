@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist, createJSONStorage } from "zustand/middleware";
+import { persist } from "zustand/middleware";
+import { createJSONStorage } from "@/utils/storageSafe";
 import type { Document, DocumentCategory } from "@/types";
 
 type DocumentState = {
@@ -181,7 +182,7 @@ export const useDocumentStore = create<DocumentState>()(
     {
       name: "detedtech-document-storage",
       version: 2,
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(),
 
       // Persist only data (not UI flags)
       partialize: (state) => ({
