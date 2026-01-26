@@ -21,7 +21,8 @@ export interface GoldStandard {
 }
 
 /**
- * Requirement input structure matching GDC types
+ * Requirement input structure - compatible with GDCRequirement
+ * Only the required subset of properties needed for gold standard generation
  */
 export interface RequirementInput {
   id: number;
