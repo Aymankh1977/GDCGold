@@ -1,0 +1,1 @@
+/* paste the goldStandardGenerator file content exactly as in the file block above */
