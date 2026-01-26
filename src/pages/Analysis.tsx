@@ -203,7 +203,7 @@ const Analysis: React.FC = () => {
                   const colors = COMPLIANCE_COLORS[status as ComplianceStatus];
                   
                   return (
-                    <div key={status} className={`flex items-center justify-between p-4 rounded-2xl border ${colors.bg.replace('bg-', 'bg-').replace('/10', '/5')} ${colors.border}`}>
+                    <div key={status} className={`flex items-center justify-between p-4 rounded-2xl border ${colors.bg.replace('bg-', 'bg-').replace('/10', '/5')} ${((typeof colors !== "undefined" && colors !== null) ? colors.border : "#e5e7eb")}`}>
                       <div className="flex items-center gap-3">
                         {getStatusIcon(status as ComplianceStatus)}
                         <span className={`text-xs font-bold uppercase tracking-wider ${colors.text}`}>
@@ -297,12 +297,12 @@ const Analysis: React.FC = () => {
                           : { bg: 'bg-gray-50/50', text: 'text-gray-500', border: 'border-gray-100' };
 
                         return (
-                          <Card key={req.id} className={`border-none shadow-sm bg-white rounded-3xl overflow-hidden border-l-4 ${result ? colors.border.replace('border-', 'border-l-') : 'border-l-gray-200'}`}>
+                          <Card key={req.id} className={`border-none shadow-sm bg-white rounded-3xl overflow-hidden border-l-4 ${result ? ((typeof colors !== "undefined" && colors !== null) ? colors.border : "#e5e7eb").replace('border-', 'border-l-') : 'border-l-gray-200'}`}>
                             <div className="p-6">
                               <div className="flex items-start justify-between gap-4 mb-6">
                                 <div className="flex items-start gap-4">
                                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-sm border transition-colors
-                                    ${result ? `${colors.bg} ${colors.text} ${colors.border}` : 'bg-gray-50 text-gray-400 border-gray-100'}`}>
+                                    ${result ? `${colors.bg} ${colors.text} ${((typeof colors !== "undefined" && colors !== null) ? colors.border : "#e5e7eb")}` : 'bg-gray-50 text-gray-400 border-gray-100'}`}>
                                     {req.id}
                                   </div>
                                   <div>
@@ -316,7 +316,7 @@ const Analysis: React.FC = () => {
                                 </div>
                                 {result && (
                                   <div className="flex flex-col items-end gap-2">
-                                    <span className={`px-3 py-1 text-[10px] font-bold rounded-lg uppercase tracking-wider border flex-shrink-0 ${colors.bg} ${colors.text} ${colors.border}`}>
+                                    <span className={`px-3 py-1 text-[10px] font-bold rounded-lg uppercase tracking-wider border flex-shrink-0 ${colors.bg} ${colors.text} ${((typeof colors !== "undefined" && colors !== null) ? colors.border : "#e5e7eb")}`}>
                                       {result.status.replace('-', ' ')}
                                     </span>
                                     <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
