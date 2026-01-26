@@ -8,7 +8,6 @@
 import {
   generateGoldStandard,
   generateForRequirements,
-  type GoldStandard,
   type Requirement
 } from './goldStandardGenerator';
 
@@ -16,7 +15,7 @@ import {
 function assert(condition: boolean, message: string) {
   if (!condition) {
     console.error(`❌ FAILED: ${message}`);
-    process.exit(1);
+    throw new Error(message);
   }
   console.log(`✅ PASSED: ${message}`);
 }
